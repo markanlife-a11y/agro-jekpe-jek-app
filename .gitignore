@@ -4,3 +4,4 @@ build/
 .flutter-plugins-dependencies
 *.iml
 .idea/
+downloaded_apk/

@@ -34,9 +34,13 @@ jobs:
           cp -r overlay/lib app/lib
           cp overlay/pubspec.yaml app/pubspec.yaml
 
-      - name: Set app display name
+      - name: Patch AndroidManifest.xml (app name + microphone permission)
         run: |
-          sed -i 's/android:label="app"/android:label="Agro Jekpe-jek"/' app/android/app/src/main/AndroidManifest.xml
+          MANIFEST=app/android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:label="app"/android:label="Agro Jekpe-jek"/' "$MANIFEST"
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET"/>#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>#' "$MANIFEST"
+          echo "--- AndroidManifest.xml ---"
+          cat "$MANIFEST"
 
       - name: Install dependencies
         working-directory: app
