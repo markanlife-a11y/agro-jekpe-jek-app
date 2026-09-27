@@ -1,0 +1,54 @@
+name: Build test APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout app source (overlay)
+        uses: actions/checkout@v4
+        with:
+          path: overlay
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - run: flutter --version
+
+      # Всё "родное" Android/Gradle-обвязку (build.gradle, gradle-wrapper и т.п.) генерирует
+      # сам `flutter create` в чистом окружении CI — надёжнее, чем вручную писать эти файлы
+      # без возможности локально их проверить. Дальше поверх свежего скелета накладываются
+      # только Dart-код (lib/) и зависимости (pubspec.yaml) из этого репозитория.
+      - name: Generate fresh Flutter project scaffold
+        run: flutter create --platforms=android --org kz.agroaiqyn --project-name agro_jekpe_jek app
+
+      - name: Overlay our app code onto the scaffold
+        run: |
+          rm -rf app/lib
+          cp -r overlay/lib app/lib
+          cp overlay/pubspec.yaml app/pubspec.yaml
+
+      - name: Set app display name
+        run: |
+          sed -i 's/android:label="app"/android:label="Agro Jekpe-jek"/' app/android/app/src/main/AndroidManifest.xml
+
+      - name: Install dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Build debug APK
+        working-directory: app
+        run: flutter build apk --debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: agro-jekpe-jek-test-apk
+          path: app/build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 14
