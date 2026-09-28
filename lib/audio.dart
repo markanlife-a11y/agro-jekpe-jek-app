@@ -29,16 +29,21 @@ class GameAudio {
     // телефон (жалоба пользователя: "музыка при блокировке не останавливается" — должна играть
     // дальше): stayAwake держит CPU-wakelock на время плеера, usageType media + audioFocus gain —
     // как у обычного музыкального проигрывателя, а не короткого звука уведомления.
-    await AudioPlayer.global.setAudioContext(const AudioContext(
-      android: AudioContextAndroid(
-        isSpeakerphoneOn: false,
-        stayAwake: true,
-        contentType: AndroidContentType.music,
-        usageType: AndroidUsageType.media,
-        audioFocus: AndroidAudioFocus.gain,
-      ),
-      iOS: AudioContextIOS(category: AVAudioSessionCategory.playback),
-    ));
+    try {
+      await AudioPlayer.global.setAudioContext(AudioContext(
+        android: AudioContextAndroid(
+          isSpeakerphoneOn: false,
+          stayAwake: true,
+          contentType: AndroidContentType.music,
+          usageType: AndroidUsageType.media,
+          audioFocus: AndroidAudioFocus.gain,
+        ),
+        iOS: AudioContextIOS(category: AVAudioSessionCategory.playback),
+      ));
+    } catch (_) {
+      // Не блокируем запуск приложения, если платформа не приняла контекст — музыка просто
+      // будет вести себя как раньше (могла останавливаться при блокировке).
+    }
     await _bgPlayer.setReleaseMode(ReleaseMode.loop);
     await _cuePlayer.setReleaseMode(ReleaseMode.release);
     await _startBackgroundLoop();

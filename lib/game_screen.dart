@@ -459,7 +459,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     final options = (item['options'] as List).cast<dynamic>();
     final locked = _phase != _Phase.question;
     final correctIndex = locked ? (_answerRes?['correctIndex'] as num?)?.toInt() : null;
-    final friendText = locked ? _answerRes?['friendAnswerText'] as String? : null;
+    final friendText = locked ? (_answerRes?['friendAnswerText'] as String?) : null;
     final friendName = _answerRes?['friendPlayerName'] as String?;
     int? friendIdx;
     if (friendText != null) {
