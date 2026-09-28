@@ -42,20 +42,20 @@ jobs:
           echo "--- AndroidManifest.xml ---"
           cat "$MANIFEST"
 
-      # Пакет vibration (и часть androidx-библиотек, которые он тянет) собран под API 34 —
-      # шаблон flutter create по умолчанию ставит compileSdk 33, из-за чего сборка падает
-      # ("compiled against android-33" / "requires ... compile against version 34 or later").
-      # Патчим явным числом — работает и для Groovy (build.gradle), и для Kotlin DSL
-      # (build.gradle.kts), какой бы формат ни сгенерировал flutter create в этой версии.
+      # Несколько плагинов (shared_preferences_android, speech_to_text, webview_flutter_android,
+      # vibration) собраны под более новый Android SDK, чем ставит по умолчанию flutter create
+      # ("compiled against android-33/35" / "requires ... 36 or later"). Патчим явным числом —
+      # работает и для Groovy (build.gradle), и для Kotlin DSL (build.gradle.kts), какой бы
+      # формат ни сгенерировал flutter create в этой версии.
       - name: Bump compileSdk to satisfy plugin requirements
         run: |
           for f in app/android/app/build.gradle.kts app/android/app/build.gradle; do
             if [ -f "$f" ]; then
               echo "--- before: $f ---"; cat "$f"
               sed -i \
-                -e 's/compileSdkVersion flutter\.compileSdkVersion/compileSdkVersion 35/' \
-                -e 's/compileSdk = flutter\.compileSdkVersion/compileSdk = 35/' \
-                -e 's/compileSdk flutter\.compileSdkVersion/compileSdk 35/' \
+                -e 's/compileSdkVersion flutter\.compileSdkVersion/compileSdkVersion 36/' \
+                -e 's/compileSdk = flutter\.compileSdkVersion/compileSdk = 36/' \
+                -e 's/compileSdk flutter\.compileSdkVersion/compileSdk 36/' \
                 "$f"
               echo "--- after: $f ---"; cat "$f"
             fi
