@@ -9,6 +9,7 @@ import 'package:auto_size_text/auto_size_text.dart';
 import 'api.dart';
 import 'sound.dart';
 import 'theme.dart';
+import 'profile_assets.dart';
 import 'home_screen.dart';
 
 enum _Phase { loading, question, grading, verdict, waitingOpponent, roundSummary, finalResult, error }
@@ -447,16 +448,18 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   // 2 карточки в ряд, плоские залитые цветом (жалоба: "ответы должны быть по два в ряд", "нужен
   // минималистичный дизайн, как в Борьба умов") — после ответа карточка подсветится сама
   // (зелёным/красным), правильный вариант тоже подсвечивается зелёным, если выбран был не он,
-  // остальные гаснут; ответ друга (если уже ответил в этом раунде первым) отмечается бейджем с
-  // его именем прямо на той карточке, которую он выбрал. Текст — AutoSizeText: сам ужимает
-  // шрифт под карточку вместо обрезки многоточием (жалоба на обрезанный текст варианта).
+  // остальные гаснут; ответ друга (если уже ответил в этом раунде первым) отмечается маленьким
+  // круглым аватаром на той карточке, которую он выбрал (жалоба: текстовый бейдж с именем
+  // перекрывал сам текст варианта — круглая картинка компактнее и привычнее, как в референсе).
+  // Текст — AutoSizeText: сам ужимает шрифт под карточку вместо обрезки многоточием.
   Widget _buildMcqGrid(Map<String, dynamic> item) {
     final options = (item['options'] as List).cast<dynamic>();
     final locked = _phase != _Phase.question;
     final grading = _phase == _Phase.grading;
     final correctIndex = locked ? (_answerRes?['correctIndex'] as num?)?.toInt() : null;
     final friendText = locked ? (_answerRes?['friendAnswerText'] as String?) : null;
-    final friendName = _answerRes?['friendPlayerName'] as String?;
+    final friendAvatarId = _answerRes?['friendAvatarId'] as String?;
+    final friendFrameId = _answerRes?['friendFrameId'] as String?;
     int? friendIdx;
     if (friendText != null) {
       final i = options.indexWhere((o) => o.toString() == friendText);
@@ -506,7 +509,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
           pulsing: grading && isSelected,
           showCorrectIcon: isCorrectCard,
           showWrongIcon: isWrongSelected,
-          friendBadge: isFriendCard ? (friendName ?? '') : null,
+          friendAvatarId: isFriendCard ? friendAvatarId : null,
+          friendFrameId: isFriendCard ? friendFrameId : null,
+          showFriendMarker: isFriendCard,
           onTap: locked ? null : () => _submitMcq(i),
         );
       },
@@ -562,6 +567,10 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildOpenAnswer() {
+    // Вердикт уже пришёл — карточка ввода (микрофон/текстовое поле) должна ПОЛНОСТЬЮ уйти,
+    // остаётся только разбор ИИ с кнопками "Оспорить"/"Далее" ниже (см. _buildResultPanel) —
+    // жалоба: раньше карточка ввода оставалась висеть ПОВЕРХ/РЯДОМ с ответом ИИ одновременно.
+    if (_phase == _Phase.verdict) return const SizedBox.shrink();
     // Проверка (grading) может занять несколько секунд — реальный запрос к ИИ, не мгновенный, как
     // у MCQ. Никакого текста "проверяю" (по просьбе), но и не оставляем экран мёртвым: мик/кнопки
     // прячем, показываем тонкую безмолвную полосу прогресса — жалоба "ответ от ии выходит
@@ -886,7 +895,9 @@ class _AnswerCard extends StatefulWidget {
   final bool pulsing;
   final bool showCorrectIcon;
   final bool showWrongIcon;
-  final String? friendBadge;
+  final bool showFriendMarker;
+  final String? friendAvatarId;
+  final String? friendFrameId;
   final VoidCallback? onTap;
 
   const _AnswerCard({
@@ -896,7 +907,9 @@ class _AnswerCard extends StatefulWidget {
     required this.pulsing,
     required this.showCorrectIcon,
     required this.showWrongIcon,
-    required this.friendBadge,
+    required this.showFriendMarker,
+    required this.friendAvatarId,
+    required this.friendFrameId,
     required this.onTap,
   });
 
@@ -949,17 +962,16 @@ class _AnswerCardState extends State<_AnswerCard> with SingleTickerProviderState
                     if (widget.showWrongIcon) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.cancel, color: Colors.white, size: 20)),
                   ],
                 ),
-                if (widget.friendBadge != null)
+                // Маленький круглый аватар вместо текстового бейджа (тот перекрывал текст
+                // варианта) — в нижнем правом углу карточки, как маркер "друг выбрал это".
+                if (widget.showFriendMarker)
                   Positioned(
-                    right: -2,
-                    top: -6,
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 110),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        decoration: BoxDecoration(color: AgroColors.greenDark, borderRadius: BorderRadius.circular(20)),
-                        child: Text('👥 ${widget.friendBadge}', style: const TextStyle(fontSize: 9, color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
-                      ),
+                    right: -4,
+                    bottom: -4,
+                    child: Container(
+                      padding: const EdgeInsets.all(1.5),
+                      decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.white),
+                      child: ProfileAvatar(avatarId: widget.friendAvatarId, frameId: widget.friendFrameId, size: 24),
                     ),
                   ),
               ],

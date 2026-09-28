@@ -33,10 +33,13 @@ flutter:
 # Иконка приложения на телефоне (значок на рабочем столе/в списке приложений) — по умолчанию
 # flutter create подставляет свою дефолтную, пользователь попросил поставить настоящий логотип.
 # Генерируется прямо в CI командой `dart run flutter_launcher_icons` перед сборкой (см.
-# .github/workflows/build-apk.yml) из того же логотипа, что и на заставке/экране входа.
+# .github/workflows/build-apk.yml). ВАЖНО: используем logo_icon.png (квадратный, центрированный
+# по кругу), а НЕ исходный logo.jpg (1407×768, широкий прямоугольник) — flutter_launcher_icons
+# просто растягивает картинку под квадрат иконки без обрезки, поэтому из прямоугольника круг
+# выходил овалом (жалоба пользователя). logo_icon.png — квадратный кроп того же логотипа.
 flutter_launcher_icons:
   android: true
   ios: false
-  image_path: "assets/images/logo.jpg"
+  image_path: "assets/images/logo_icon.png"
   adaptive_icon_background: "#F4EFE3"
-  adaptive_icon_foreground: "assets/images/logo.jpg"
+  adaptive_icon_foreground: "assets/images/logo_icon.png"
