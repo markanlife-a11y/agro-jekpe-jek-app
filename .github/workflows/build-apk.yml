@@ -8,11 +8,40 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout app source (overlay)
         uses: actions/checkout@v4
         with:
           path: overlay
+
+      # Каждый CI-запуск — чистая машина без ~/.android/debug.keystore, поэтому Gradle раньше
+      # генерировал НОВЫЙ случайный debug-ключ на каждой сборке — Android видит это как другое
+      # приложение и отказывается ставить обновление поверх старого ("конфликтует с другим
+      # пакетом", жалоба пользователя: обновление ни разу не сработало, приходилось удалять
+      # старую версию). Фикс: один и тот же keystore хранится в репозитории (это debug-ключ,
+      # не для публикации в Play Store — там нужен отдельный release-ключ, храниться в общем
+      # доступе ему нормально) и переиспользуется во всех сборках; если его ещё нет — эта же
+      # сборка создаёт его и коммитит обратно, дальше все следующие сборки берут готовый.
+      - name: Ensure stable debug keystore (so updates install without uninstalling)
+        run: |
+          mkdir -p ~/.android
+          if [ -f overlay/android-debug.keystore ]; then
+            echo "Reusing committed debug keystore"
+            cp overlay/android-debug.keystore ~/.android/debug.keystore
+          else
+            echo "No committed debug keystore yet — generating one and committing it for future builds"
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            cp ~/.android/debug.keystore overlay/android-debug.keystore
+            cd overlay
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add android-debug.keystore
+            git commit -m "Add stable debug keystore for consistent APK signing across builds [skip ci]"
+            git push
+            cd ..
+          fi
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -39,13 +68,11 @@ jobs:
       # не сможет найти установленный Telegram, чтобы передать ему обычную https-ссылку
       # t.me/bot?start=... (вход/привязка через код+ссылку, см. lib/login_screen.dart,
       # lib/settings_screen.dart) — launchUrl тихо считал бы, что приложения "нет".
-      # WAKE_LOCK — фоновая музыка (см. lib/audio.dart, stayAwake) не должна замолкать, когда
-      # гаснет экран/блокируется телефон.
       - name: Patch AndroidManifest.xml (app name, permissions, tg:// queries)
         run: |
           MANIFEST=app/android/app/src/main/AndroidManifest.xml
           sed -i 's/android:label="app"/android:label="Agro Jekpe-jek"/' "$MANIFEST"
-          sed -i 's#<uses-permission android:name="android.permission.INTERNET"/>#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>#' "$MANIFEST"
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET"/>#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>#' "$MANIFEST"
           sed -i 's#</manifest>#    <queries>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="tg" /></intent>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent>\n    </queries>\n</manifest>#' "$MANIFEST"
           echo "--- AndroidManifest.xml ---"
           cat "$MANIFEST"

@@ -1,12 +1,10 @@
-// По просьбе пользователя — ОДНА музыка ("attack"), играет непрерывно фоном всё время, пока
-// открыто приложение (с момента запуска), независимо от экрана. Раньше были два трека (тихий
-// фон + отдельный стингер на каждый вопрос) — по факту только усложняло и не давало
-// предсказуемого результата, поэтому упростили до одного.
+// Музыка ("attack") играет, ПОКА приложение реально на экране (по просьбе пользователя — до
+// этого было наоборот, недопонимание: нужно, чтобы звук ВЫКЛЮЧАЛСЯ, когда сворачиваешь
+// приложение или блокируешь телефон, а не продолжал играть в фоне).
 //
-// GameAudio слушает жизненный цикл приложения (WidgetsBindingObserver) и принудительно
-// возобновляет воспроизведение при возврате на передний план — на части прошивок Android
-// останавливает/приостанавливает плеер при сворачивании приложения или блокировке экрана без
-// явного возобновления, даже с stayAwake.
+// GameAudio слушает жизненный цикл приложения (WidgetsBindingObserver): сворачивание/блокировка
+// (paused/inactive/hidden) — сразу пауза; возврат на экран (resumed) — снова играет, если музыка
+// включена в настройках.
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -28,23 +26,6 @@ class GameAudio with WidgetsBindingObserver {
     final prefs = await SharedPreferences.getInstance();
     _enabled = prefs.getBool('musicEnabled') ?? true;
     _volume = prefs.getDouble('musicVolume') ?? 0.5;
-    // stayAwake держит CPU-wakelock на время плеера, usageType media + audioFocus gain — как у
-    // обычного музыкального проигрывателя, а не короткого звука уведомления, которое система
-    // может оборвать при блокировке экрана.
-    try {
-      await AudioPlayer.global.setAudioContext(AudioContext(
-        android: AudioContextAndroid(
-          isSpeakerphoneOn: false,
-          stayAwake: true,
-          contentType: AndroidContentType.music,
-          usageType: AndroidUsageType.media,
-          audioFocus: AndroidAudioFocus.gain,
-        ),
-        iOS: AudioContextIOS(category: AVAudioSessionCategory.playback),
-      ));
-    } catch (_) {
-      // Не блокируем запуск приложения, если платформа не приняла контекст.
-    }
     await _player.setReleaseMode(ReleaseMode.loop);
     WidgetsBinding.instance.addObserver(this);
     await _start();
@@ -63,18 +44,28 @@ class GameAudio with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Свернули назад / разблокировали — на всякий случай убеждаемся, что музыка реально играет,
-    // а не осталась молча приостановленной системой.
-    if (state == AppLifecycleState.resumed) _ensurePlaying();
+    if (state == AppLifecycleState.resumed) {
+      _resumeIfEnabled();
+    } else {
+      // paused / inactive / hidden / detached — экран не виден (свернули приложение ИЛИ
+      // заблокировали телефон): звук должен замолкнуть.
+      _pause();
+    }
   }
 
-  Future<void> _ensurePlaying() async {
+  Future<void> _pause() async {
+    try {
+      await _player.pause();
+    } catch (_) {}
+  }
+
+  Future<void> _resumeIfEnabled() async {
     if (!_enabled) return;
     try {
-      if (!_started) {
-        await _start();
-      } else {
+      if (_started) {
         await _player.resume();
+      } else {
+        await _start();
       }
     } catch (_) {}
   }

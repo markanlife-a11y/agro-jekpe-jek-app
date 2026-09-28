@@ -43,6 +43,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   // после вопроса он не пишет что слушает" — раньше в этот промежуток вообще ничего не
   // показывалось, экран выглядел мёртвым.
   bool _listenStarting = false;
+  bool _speechReady = false; // initialize() один раз на весь баттл, не на каждый вопрос
   bool _speechDenied = false;
   String? _speechErrorMsg; // конкретная причина отказа (не только "нет доступа")
   String _partialTranscript = '';
@@ -175,28 +176,36 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       if (mounted) setState(() { _speechDenied = true; _listenStarting = false; });
       return;
     }
-    final available = await _speech.initialize(
-      onStatus: (status) {
-        if (status == 'done' || status == 'notListening') {
-          if (mounted && _listening) {
-            setState(() => _listening = false);
+    // initialize() — тяжёлая операция (поднимает нативный движок распознавания); жалоба
+    // "голосовой не принимает" — один из вероятных источников: раньше вызывался заново на
+    // КАЖДЫЙ открытый вопрос в течение батла, а не один раз, что на части устройств/версий
+    // плагина оставляет движок в нерабочем состоянии после повторных initialize() без явного
+    // cancel(). Теперь — один раз на весь экран боя, дальше просто listen() заново.
+    if (!_speechReady) {
+      final available = await _speech.initialize(
+        onStatus: (status) {
+          if (status == 'done' || status == 'notListening') {
+            if (mounted && _listening) {
+              setState(() => _listening = false);
+            }
           }
-        }
-      },
-      onError: (error) {
-        if (mounted) {
-          setState(() {
-            _listening = false;
-            _listenStarting = false;
-            _speechErrorMsg = error.errorMsg;
-          });
-        }
-      },
-    );
-    if (!mounted) return;
-    if (!available) {
-      setState(() { _speechDenied = true; _listenStarting = false; });
-      return;
+        },
+        onError: (error) {
+          if (mounted) {
+            setState(() {
+              _listening = false;
+              _listenStarting = false;
+              _speechErrorMsg = error.errorMsg;
+            });
+          }
+        },
+      );
+      if (!mounted) return;
+      if (!available) {
+        setState(() { _speechDenied = true; _listenStarting = false; });
+        return;
+      }
+      _speechReady = true;
     }
     // ru_RU не на всех устройствах установлен голосовым движком — если его нет в списке,
     // отдаём выбор системному распознаванию по умолчанию вместо того, чтобы listen() молча
@@ -483,9 +492,10 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
           bg = Colors.grey.withOpacity(0.16);
           textColor = Colors.black45;
         } else {
-          // Ещё не отвечено — плоский залитый цвет вместо тонкой обводки, две тональности по
-          // очереди (агрономическая палитра, не голубой/фиолетовый из референса).
-          bg = i.isEven ? AgroColors.green : AgroColors.goldDark;
+          // Ещё не отвечено — один и тот же цвет у всех 4 карточек (жалоба: "почему карточки
+          // разного цвета, половина зелёная половина жёлтая" — разные тона путали, что это
+          // такое; плоская заливка вместо тонкой обводки осталась, но единая).
+          bg = AgroColors.green;
           textColor = Colors.white;
         }
 
