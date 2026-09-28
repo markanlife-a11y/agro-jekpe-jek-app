@@ -60,6 +60,16 @@ class Api {
   // --- Вход ---
   Future<Map<String, dynamic>> logout() => _post('/miniapp/api/auth/logout');
 
+  Future<Map<String, dynamic>> registerEmail(String email, String password, String displayName) =>
+      _post('/miniapp/api/auth/register', {'email': email, 'password': password, 'displayName': displayName});
+
+  Future<Map<String, dynamic>> loginEmail(String email, String password) =>
+      _post('/miniapp/api/auth/login', {'email': email, 'password': password});
+
+  // telegramAuthPayload — сырые поля из Telegram Login Widget (id, first_name, ..., hash).
+  Future<Map<String, dynamic>> linkTelegram(Map<String, dynamic> telegramAuthPayload) =>
+      _post('/miniapp/api/auth/link-telegram', telegramAuthPayload);
+
   // --- Главный экран ---
   Future<Map<String, dynamic>> me() => _post('/miniapp/api/me');
 

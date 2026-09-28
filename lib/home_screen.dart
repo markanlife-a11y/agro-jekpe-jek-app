@@ -5,11 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'api.dart';
 import 'sound.dart';
-import 'audio.dart';
 import 'theme.dart';
 import 'queue_screen.dart';
 import 'game_screen.dart';
-import 'login_screen.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -52,63 +51,11 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> _logout() async {
-    await Api.instance.logout();
-    await Api.instance.clearSession();
-    if (!mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const LoginScreen()), (route) => false);
-  }
-
-  void _showSoundSettings() {
+  void _openSettings() {
     Haptics.tap();
-    showModalBottomSheet(
-      context: context,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setModalState) {
-            final audio = GameAudio.instance;
-            return Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('🔊 Звук', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  const SizedBox(height: 14),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Музыка'),
-                    value: audio.enabled,
-                    onChanged: (v) async {
-                      await audio.setEnabled(v);
-                      setModalState(() {});
-                    },
-                  ),
-                  Row(
-                    children: [
-                      const Icon(Icons.volume_down),
-                      Expanded(
-                        child: Slider(
-                          value: audio.volume,
-                          onChanged: audio.enabled
-                              ? (v) async {
-                                  await audio.setVolume(v);
-                                  setModalState(() {});
-                                }
-                              : null,
-                        ),
-                      ),
-                      const Icon(Icons.volume_up),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => SettingsScreen(account: _data?['account'] as Map<String, dynamic>?)))
+        .then((_) => _load());
   }
 
   void _startRandom() {
@@ -158,10 +105,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('⚔️ Agro Jekpe-jek'),
-        actions: [
-          IconButton(icon: const Icon(Icons.volume_up), tooltip: 'Звук', onPressed: _showSoundSettings),
-          IconButton(icon: const Icon(Icons.logout), tooltip: 'Выйти', onPressed: _logout),
-        ],
+        actions: [IconButton(icon: const Icon(Icons.settings_outlined), tooltip: 'Настройки', onPressed: _openSettings)],
       ),
       body: RefreshIndicator(
         onRefresh: _load,
