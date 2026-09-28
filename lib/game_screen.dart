@@ -5,9 +5,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:auto_size_text/auto_size_text.dart';
 import 'api.dart';
 import 'sound.dart';
-import 'audio.dart';
 import 'theme.dart';
 import 'home_screen.dart';
 
@@ -39,24 +39,22 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
   final stt.SpeechToText _speech = stt.SpeechToText();
   bool _listening = false;
+  // Пока идёт setup распознавания речи (initialize/listen ещё не отработали) — жалоба: "сразу
+  // после вопроса он не пишет что слушает" — раньше в этот промежуток вообще ничего не
+  // показывалось, экран выглядел мёртвым.
+  bool _listenStarting = false;
   bool _speechDenied = false;
+  String? _speechErrorMsg; // конкретная причина отказа (не только "нет доступа")
   String _partialTranscript = '';
 
   Timer? _pollTimer;
   bool _submitting = false;
 
-  // 20-секундный таймер на MCQ-вопрос (жалоба: "должен быть прогресс тайминга, можно по 20
-  // секунд") — при истечении сам шлёт "тайм-аут" (засчитывается неверным, без выбранного
-  // варианта). Для открытых вопросов не используется — там уже свой голосовой темп (пауза
-  // определяет конец фразы).
+  // 40-секундный таймер на MCQ-вопрос — при истечении сам шлёт "тайм-аут" (засчитывается
+  // неверным, без выбранного варианта). Для открытых вопросов не используется — там уже свой
+  // голосовой темп (пауза определяет конец фразы). Переход к следующему вопросу — только по
+  // кнопке "Далее", без автоперехода по таймеру (жалоба: "автоперехода не надо").
   AnimationController? _questionTimer;
-
-  // Автопереход к следующему вопросу через 5 сек после вердикта (жалоба: "автопереход можно
-  // сделать 5 сек либо кнопка Далее внизу") — кнопка "Далее" при этом всё равно всегда доступна
-  // сразу. Не запускается, если можно оспорить (открытый неверный ответ) — не отнимаем время на
-  // раздумье и написание спора.
-  Timer? _autoAdvanceTimer;
-  int? _autoAdvanceSeconds;
 
   @override
   void initState() {
@@ -67,7 +65,6 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   @override
   void dispose() {
     _pollTimer?.cancel();
-    _autoAdvanceTimer?.cancel();
     _questionTimer?.dispose();
     _speech.stop();
     _openAnswerCtrl.dispose();
@@ -75,35 +72,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  void _cancelAutoAdvance() {
-    _autoAdvanceTimer?.cancel();
-    _autoAdvanceTimer = null;
-    if (_autoAdvanceSeconds != null) setState(() => _autoAdvanceSeconds = null);
-  }
-
-  void _startAutoAdvance() {
-    _autoAdvanceTimer?.cancel();
-    setState(() => _autoAdvanceSeconds = 5);
-    _autoAdvanceTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (!mounted) {
-        t.cancel();
-        return;
-      }
-      final next = (_autoAdvanceSeconds ?? 1) - 1;
-      if (next <= 0) {
-        t.cancel();
-        _autoAdvanceTimer = null;
-        _autoAdvanceSeconds = null;
-        _next();
-      } else {
-        setState(() => _autoAdvanceSeconds = next);
-      }
-    });
-  }
-
   void _startQuestionTimer() {
     _questionTimer?.dispose();
-    final ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 20));
+    final ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 40));
     _questionTimer = ctrl;
     ctrl.addStatusListener((status) {
       if (status == AnimationStatus.completed) _onQuestionTimeout();
@@ -124,7 +95,6 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _loadCurrent() async {
-    _cancelAutoAdvance();
     _questionTimer?.stop();
     setState(() => _phase = _Phase.loading);
     final res = await Api.instance.battlePlay(widget.battleId);
@@ -152,7 +122,6 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       _partialTranscript = '';
       _phase = _Phase.question;
     });
-    GameAudio.instance.playQuestionCue(); // "attack" — именно на показ вопроса, не один раз на бой
     if (_item?['type'] == 'open') {
       _beginListening();
     } else {
@@ -197,11 +166,13 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   Future<void> _beginListening() async {
     setState(() {
       _speechDenied = false;
+      _speechErrorMsg = null;
       _partialTranscript = '';
+      _listenStarting = true; // сразу что-то показываем, не дожидаясь initialize/listen
     });
     final status = await Permission.microphone.request();
     if (!status.isGranted) {
-      setState(() => _speechDenied = true);
+      if (mounted) setState(() { _speechDenied = true; _listenStarting = false; });
       return;
     }
     final available = await _speech.initialize(
@@ -212,17 +183,34 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
           }
         }
       },
-      onError: (_) {
-        if (mounted) setState(() => _listening = false);
+      onError: (error) {
+        if (mounted) {
+          setState(() {
+            _listening = false;
+            _listenStarting = false;
+            _speechErrorMsg = error.errorMsg;
+          });
+        }
       },
     );
+    if (!mounted) return;
     if (!available) {
-      setState(() => _speechDenied = true);
+      setState(() { _speechDenied = true; _listenStarting = false; });
       return;
     }
-    setState(() => _listening = true);
+    // ru_RU не на всех устройствах установлен голосовым движком — если его нет в списке,
+    // отдаём выбор системному распознаванию по умолчанию вместо того, чтобы listen() молча
+    // ничего не делал (жалоба: "голосовой не принимает").
+    String? localeId = 'ru_RU';
+    try {
+      final locales = await _speech.locales();
+      if (!locales.any((l) => l.localeId.toLowerCase().startsWith('ru'))) localeId = null;
+    } catch (_) {
+      localeId = null;
+    }
+    setState(() { _listening = true; _listenStarting = false; });
     await _speech.listen(
-      localeId: 'ru_RU',
+      localeId: localeId,
       onResult: (result) {
         if (!mounted) return;
         setState(() => _partialTranscript = result.recognizedWords);
@@ -291,9 +279,6 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       _answerRes = res;
       _phase = _Phase.verdict;
     });
-    // Автопереход через 5 сек — но не тогда, когда можно оспорить (открытый неверный ответ):
-    // не отнимаем время на раздумье, пользователь сам решает, когда жать "Далее".
-    if (res['canDispute'] != true) _startAutoAdvance();
   }
 
   Future<void> _sendDispute(String text) async {
@@ -315,7 +300,6 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _next() async {
-    _cancelAutoAdvance();
     Haptics.nav();
     final res = _answerRes;
     if (res == null) return;
@@ -451,13 +435,16 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     );
   }
 
-  // 2 карточки в ряд (жалоба: "ответы должны быть по два в ряд") — после ответа карточка
-  // подсветится сама (зелёным/красным), правильный вариант тоже подсвечивается зелёным, если
-  // выбран был не он; ответ друга (если уже ответил в этом раунде первым) отмечается бейджем
-  // с его именем прямо на той карточке, которую он выбрал.
+  // 2 карточки в ряд, плоские залитые цветом (жалоба: "ответы должны быть по два в ряд", "нужен
+  // минималистичный дизайн, как в Борьба умов") — после ответа карточка подсветится сама
+  // (зелёным/красным), правильный вариант тоже подсвечивается зелёным, если выбран был не он,
+  // остальные гаснут; ответ друга (если уже ответил в этом раунде первым) отмечается бейджем с
+  // его именем прямо на той карточке, которую он выбрал. Текст — AutoSizeText: сам ужимает
+  // шрифт под карточку вместо обрезки многоточием (жалоба на обрезанный текст варианта).
   Widget _buildMcqGrid(Map<String, dynamic> item) {
     final options = (item['options'] as List).cast<dynamic>();
     final locked = _phase != _Phase.question;
+    final grading = _phase == _Phase.grading;
     final correctIndex = locked ? (_answerRes?['correctIndex'] as num?)?.toInt() : null;
     final friendText = locked ? (_answerRes?['friendAnswerText'] as String?) : null;
     final friendName = _answerRes?['friendPlayerName'] as String?;
@@ -475,92 +462,52 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         crossAxisCount: 2,
         mainAxisSpacing: 10,
         crossAxisSpacing: 10,
-        childAspectRatio: 2.3,
+        childAspectRatio: 2.2,
       ),
       itemBuilder: (context, i) {
-        final letter = String.fromCharCode(65 + i);
         final isSelected = _selectedOption == i;
         final isCorrectCard = locked && correctIndex != null && i == correctIndex;
         final isWrongSelected = locked && isSelected && correctIndex != null && i != correctIndex;
         final isFriendCard = friendIdx == i;
+        final dimmed = locked && !isCorrectCard && !isWrongSelected;
 
-        Color? bg;
-        Color borderColor = Theme.of(context).colorScheme.outlineVariant;
-        double borderWidth = 1;
+        Color bg;
+        Color textColor;
         if (isCorrectCard) {
-          bg = AgroColors.green.withOpacity(0.16);
-          borderColor = AgroColors.green;
-          borderWidth = 2;
+          bg = AgroColors.green;
+          textColor = Colors.white;
         } else if (isWrongSelected) {
-          bg = AgroColors.danger.withOpacity(0.14);
-          borderColor = AgroColors.danger;
-          borderWidth = 2;
-        } else if (!locked && isSelected) {
-          borderColor = AgroColors.gold;
-          borderWidth = 2;
+          bg = AgroColors.danger;
+          textColor = Colors.white;
+        } else if (dimmed) {
+          bg = Colors.grey.withOpacity(0.16);
+          textColor = Colors.black45;
+        } else {
+          // Ещё не отвечено — плоский залитый цвет вместо тонкой обводки, две тональности по
+          // очереди (агрономическая палитра, не голубой/фиолетовый из референса).
+          bg = i.isEven ? AgroColors.green : AgroColors.goldDark;
+          textColor = Colors.white;
         }
 
-        return AnimatedContainer(
-          duration: const Duration(milliseconds: 280),
-          curve: Curves.easeOut,
-          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14), border: Border.all(color: borderColor, width: borderWidth)),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(14),
-              onTap: locked ? null : () => _submitMcq(i),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    Row(
-                      children: [
-                        CircleAvatar(radius: 11, backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest, child: Text(letter, style: const TextStyle(fontSize: 11))),
-                        const SizedBox(width: 8),
-                        Expanded(child: Text(options[i].toString(), style: const TextStyle(fontSize: 13), maxLines: 3, overflow: TextOverflow.ellipsis)),
-                        if (isCorrectCard) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.check_circle, color: AgroColors.green, size: 18)),
-                        if (isWrongSelected) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.cancel, color: AgroColors.danger, size: 18)),
-                      ],
-                    ),
-                    if (isFriendCard)
-                      Positioned(
-                        right: -2,
-                        top: -6,
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 110),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(color: AgroColors.greenDark, borderRadius: BorderRadius.circular(20)),
-                            child: Text('👥 ${friendName ?? ""}', style: const TextStyle(fontSize: 9, color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
+        return _AnswerCard(
+          text: options[i].toString(),
+          background: bg,
+          textColor: textColor,
+          pulsing: grading && isSelected,
+          showCorrectIcon: isCorrectCard,
+          showWrongIcon: isWrongSelected,
+          friendBadge: isFriendCard ? (friendName ?? '') : null,
+          onTap: locked ? null : () => _submitMcq(i),
         );
       },
     );
   }
 
-  // Появляется анимированно под карточками — во время проверки компактный индикатор, после
-  // неё разбор с оспариванием/переходом дальше. Раньше это была ОТДЕЛЬНАЯ страница-вердикт,
-  // из-за чего смена экрана ощущалась рывком.
+  // Появляется анимированно под карточками — сразу разбор с оспариванием/переходом дальше.
+  // Раньше это была ОТДЕЛЬНАЯ страница-вердикт (смена экрана ощущалась рывком) с текстовым
+  // "Проверяю ответ" — теперь во время проверки тут вообще ничего нет (без слов "проверяю"),
+  // сама выбранная карточка мягко пульсирует (см. _buildMcqGrid) — это и есть вся индикация.
   Widget _buildResultPanel() {
-    if (_phase == _Phase.grading) {
-      return const Padding(
-        padding: EdgeInsets.only(top: 16),
-        child: Card(
-          child: Padding(
-            padding: EdgeInsets.symmetric(vertical: 14),
-            child: ThinkingIndicator(label: 'Проверяю ответ…', cycle: true, compact: true),
-          ),
-        ),
-      );
-    }
     if (_phase != _Phase.verdict || _answerRes == null) return const SizedBox.shrink();
 
     final res = _answerRes!;
@@ -590,12 +537,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             children: [
               if (canDispute) Expanded(child: OutlinedButton(onPressed: _showDisputeSheet, child: const Text('⚖️ Оспорить'))),
               if (canDispute) const SizedBox(width: 10),
-              Expanded(
-                child: FilledButton(
-                  onPressed: _next,
-                  child: Text(_autoAdvanceSeconds != null ? 'Далее ($_autoAdvanceSeconds)' : '➡️ Далее'),
-                ),
-              ),
+              Expanded(child: FilledButton(onPressed: _next, child: const Text('➡️ Далее'))),
             ],
           ),
           if (_disputeReply != null) ...[
@@ -610,6 +552,21 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildOpenAnswer() {
+    // Проверка (grading) может занять несколько секунд — реальный запрос к ИИ, не мгновенный, как
+    // у MCQ. Никакого текста "проверяю" (по просьбе), но и не оставляем экран мёртвым: мик/кнопки
+    // прячем, показываем тонкую безмолвную полосу прогресса — жалоба "ответ от ии выходит
+    // где-то в конце" была отчасти как раз про то, что в этот момент непонятно, что что-то
+    // вообще происходит.
+    if (_phase == _Phase.grading) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 22),
+          child: Center(
+            child: SizedBox(width: 120, child: LinearProgressIndicator(minHeight: 4)),
+          ),
+        ),
+      );
+    }
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -619,12 +576,20 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
               const Icon(Icons.mic_off, size: 36, color: AgroColors.danger),
               const SizedBox(height: 8),
               const Text('Нет доступа к микрофону — разрешите его в настройках телефона для этого приложения, или напечатайте ответ ниже.', textAlign: TextAlign.center),
+            ] else if (_listenStarting) ...[
+              const SizedBox(height: 4),
+              const ThinkingIndicator(label: 'Готовлю микрофон…', compact: true),
+              const SizedBox(height: 8),
             ] else ...[
               Icon(_listening ? Icons.mic : Icons.mic_none, size: 44, color: _listening ? AgroColors.green : Colors.grey),
               const SizedBox(height: 8),
               Text(_listening ? '🎤 Слушаю…' : 'Микрофон выключен', style: const TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 10),
               Text(_partialTranscript.isEmpty ? 'Говорите — ответ отправится сам, как только вы замолчите.' : _partialTranscript, textAlign: TextAlign.center),
+              if (!_listening && _speechErrorMsg != null) ...[
+                const SizedBox(height: 6),
+                Text('⚠️ Распознавание речи: $_speechErrorMsg', style: const TextStyle(fontSize: 11.5, color: AgroColors.danger), textAlign: TextAlign.center),
+              ],
               const SizedBox(height: 12),
               if (_listening)
                 OutlinedButton.icon(onPressed: _stopListeningManually, icon: const Icon(Icons.stop), label: const Text('Готово, отправить'))
@@ -652,7 +617,6 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   void _showDisputeSheet() {
-    _cancelAutoAdvance();
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -902,7 +866,108 @@ class ThinkingIndicatorState extends State<ThinkingIndicator> with SingleTickerP
   }
 }
 
-/// Полоса обратного отсчёта на MCQ-вопрос (20 секунд) — зелёная → жёлтая → красная по мере
+/// Одна карточка варианта ответа — плоская, залитая цветом, с текстом, который сам ужимается
+/// под размер карточки (AutoSizeText), и мягкой пульсацией, пока ответ отправлен, но вердикт ещё
+/// не пришёл (единственная индикация "проверяю" — без единого слова текста).
+class _AnswerCard extends StatefulWidget {
+  final String text;
+  final Color background;
+  final Color textColor;
+  final bool pulsing;
+  final bool showCorrectIcon;
+  final bool showWrongIcon;
+  final String? friendBadge;
+  final VoidCallback? onTap;
+
+  const _AnswerCard({
+    required this.text,
+    required this.background,
+    required this.textColor,
+    required this.pulsing,
+    required this.showCorrectIcon,
+    required this.showWrongIcon,
+    required this.friendBadge,
+    required this.onTap,
+  });
+
+  @override
+  State<_AnswerCard> createState() => _AnswerCardState();
+}
+
+class _AnswerCardState extends State<_AnswerCard> with SingleTickerProviderStateMixin {
+  late final AnimationController _pulseCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 650))..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _pulseCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final card = AnimatedContainer(
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+      decoration: BoxDecoration(color: widget.background, borderRadius: BorderRadius.circular(16)),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: widget.onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: AutoSizeText(
+                        widget.text,
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: widget.textColor),
+                        maxLines: 3,
+                        minFontSize: 10,
+                      ),
+                    ),
+                    if (widget.showCorrectIcon) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.check_circle, color: Colors.white, size: 20)),
+                    if (widget.showWrongIcon) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.cancel, color: Colors.white, size: 20)),
+                  ],
+                ),
+                if (widget.friendBadge != null)
+                  Positioned(
+                    right: -2,
+                    top: -6,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 110),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(color: AgroColors.greenDark, borderRadius: BorderRadius.circular(20)),
+                        child: Text('👥 ${widget.friendBadge}', style: const TextStyle(fontSize: 9, color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!widget.pulsing) return card;
+    return AnimatedBuilder(
+      animation: _pulseCtrl,
+      builder: (context, child) => Opacity(opacity: 0.55 + 0.45 * _pulseCtrl.value, child: child),
+      child: card,
+    );
+  }
+}
+
+/// Полоса обратного отсчёта на MCQ-вопрос (40 секунд) — зелёная → жёлтая → красная по мере
 /// приближения к нулю, останавливается (и просто гаснет), как только вопрос отвечен, чтобы не
 /// продолжала бежать поверх уже подсвеченных карточек.
 class _QuestionTimerBar extends StatelessWidget {

@@ -1,34 +1,36 @@
-// "taraz" — фоновая музыка, играет ВСЕГДА, пока открыто приложение (запускается один раз при
-// старте, не привязана к конкретному экрану). "attack" — короткий трек именно в момент, когда
-// идёт ответ на вопрос (при показе каждого вопроса, не один раз на весь бой).
+// По просьбе пользователя — ОДНА музыка ("attack"), играет непрерывно фоном всё время, пока
+// открыто приложение (с момента запуска), независимо от экрана. Раньше были два трека (тихий
+// фон + отдельный стингер на каждый вопрос) — по факту только усложняло и не давало
+// предсказуемого результата, поэтому упростили до одного.
+//
+// GameAudio слушает жизненный цикл приложения (WidgetsBindingObserver) и принудительно
+// возобновляет воспроизведение при возврате на передний план — на части прошивок Android
+// останавливает/приостанавливает плеер при сворачивании приложения или блокировке экрана без
+// явного возобновления, даже с stayAwake.
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-class GameAudio {
+class GameAudio with WidgetsBindingObserver {
   GameAudio._();
   static final GameAudio instance = GameAudio._();
 
-  final AudioPlayer _bgPlayer = AudioPlayer();
-  final AudioPlayer _cuePlayer = AudioPlayer();
+  final AudioPlayer _player = AudioPlayer();
 
   bool _enabled = true;
   double _volume = 0.5;
-  bool _bgStarted = false;
+  bool _started = false;
 
   bool get enabled => _enabled;
   double get volume => _volume;
-
-  static const double _bgLevel = 0.35;
-  static const double _cueLevel = 0.85;
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _enabled = prefs.getBool('musicEnabled') ?? true;
     _volume = prefs.getDouble('musicVolume') ?? 0.5;
-    // Без этого Android останавливает воспроизведение, как только гаснет экран/блокируется
-    // телефон (жалоба пользователя: "музыка при блокировке не останавливается" — должна играть
-    // дальше): stayAwake держит CPU-wakelock на время плеера, usageType media + audioFocus gain —
-    // как у обычного музыкального проигрывателя, а не короткого звука уведомления.
+    // stayAwake держит CPU-wakelock на время плеера, usageType media + audioFocus gain — как у
+    // обычного музыкального проигрывателя, а не короткого звука уведомления, которое система
+    // может оборвать при блокировке экрана.
     try {
       await AudioPlayer.global.setAudioContext(AudioContext(
         android: AudioContextAndroid(
@@ -41,23 +43,40 @@ class GameAudio {
         iOS: AudioContextIOS(category: AVAudioSessionCategory.playback),
       ));
     } catch (_) {
-      // Не блокируем запуск приложения, если платформа не приняла контекст — музыка просто
-      // будет вести себя как раньше (могла останавливаться при блокировке).
+      // Не блокируем запуск приложения, если платформа не приняла контекст.
     }
-    await _bgPlayer.setReleaseMode(ReleaseMode.loop);
-    await _cuePlayer.setReleaseMode(ReleaseMode.release);
-    await _startBackgroundLoop();
+    await _player.setReleaseMode(ReleaseMode.loop);
+    WidgetsBinding.instance.addObserver(this);
+    await _start();
   }
 
-  Future<void> _startBackgroundLoop() async {
-    if (_bgStarted || !_enabled) return;
+  Future<void> _start() async {
+    if (_started || !_enabled) return;
     try {
-      await _bgPlayer.setVolume(_volume * _bgLevel);
-      await _bgPlayer.play(AssetSource('audio/taraz.mp4'));
-      _bgStarted = true;
+      await _player.setVolume(_volume);
+      await _player.play(AssetSource('audio/attack.mp4'));
+      _started = true;
     } catch (_) {
       // нет звука — не критично для игры
     }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Свернули назад / разблокировали — на всякий случай убеждаемся, что музыка реально играет,
+    // а не осталась молча приостановленной системой.
+    if (state == AppLifecycleState.resumed) _ensurePlaying();
+  }
+
+  Future<void> _ensurePlaying() async {
+    if (!_enabled) return;
+    try {
+      if (!_started) {
+        await _start();
+      } else {
+        await _player.resume();
+      }
+    } catch (_) {}
   }
 
   Future<void> setEnabled(bool value) async {
@@ -65,11 +84,11 @@ class GameAudio {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('musicEnabled', value);
     if (!value) {
-      await _bgPlayer.pause();
-    } else if (_bgStarted) {
-      await _bgPlayer.resume();
+      await _player.pause();
+    } else if (_started) {
+      await _player.resume();
     } else {
-      await _startBackgroundLoop();
+      await _start();
     }
   }
 
@@ -77,17 +96,6 @@ class GameAudio {
     _volume = value;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('musicVolume', value);
-    await _bgPlayer.setVolume(value * _bgLevel);
-    await _cuePlayer.setVolume(value * _cueLevel);
-  }
-
-  /// Короткий трек-стингер — на каждый показ вопроса ("идут ответы на вопросы").
-  Future<void> playQuestionCue() async {
-    if (!_enabled) return;
-    try {
-      await _cuePlayer.stop();
-      await _cuePlayer.setVolume(_volume * _cueLevel);
-      await _cuePlayer.play(AssetSource('audio/attack.mp4'));
-    } catch (_) {}
+    await _player.setVolume(value);
   }
 }

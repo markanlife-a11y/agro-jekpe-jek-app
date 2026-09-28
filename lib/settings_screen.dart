@@ -235,6 +235,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             const SizedBox(height: 20),
+          ] else ...[
+            // Вошли напрямую через Telegram (см. lib/login_screen.dart) — email-аккаунта нет,
+            // отвязывать нечего: Telegram и есть личность. Показываем это явно, а не молчим —
+            // иначе непонятно, почему в Настройках нет ни "Привязать", ни "Отвязать".
+            const _SectionTitle('Аккаунт'),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.send, color: AgroColors.green),
+                title: const Text('Вход через Telegram'),
+                subtitle: Text(widget.user?['username'] != null ? '@${widget.user!['username']}' : 'Отвязывать нечего — это и есть ваш аккаунт.'),
+              ),
+            ),
+            const SizedBox(height: 20),
           ],
           const _SectionTitle('Звук'),
           Card(

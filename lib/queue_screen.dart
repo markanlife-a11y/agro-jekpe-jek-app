@@ -77,7 +77,7 @@ class _QueueScreenState extends State<QueueScreen> {
                 ? [
                     const ThinkingIndicator(label: 'Ищем соперника…'),
                     const SizedBox(height: 12),
-                    const Text('Обычно занимает пару секунд, если сейчас кто-то ещё в поиске.', textAlign: TextAlign.center),
+                    const Text('Соперник назначается сразу из зарегистрированных игроков — обычно занимает секунду.', textAlign: TextAlign.center),
                     const SizedBox(height: 24),
                     OutlinedButton(onPressed: _cancel, child: const Text('❌ Отменить поиск')),
                   ]
