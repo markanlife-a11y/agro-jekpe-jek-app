@@ -68,13 +68,11 @@ class _SplashGateState extends State<SplashGate> with SingleTickerProviderStateM
   }
 
   Future<void> _check() async {
-    final results = await Future.wait([
+    await Future.wait<void>([
       GameAudio.instance.init(),
       Api.instance.loadSession(),
-      Future.delayed(const Duration(milliseconds: 900)), // даём анимации доиграть, не мигаем
+      Future<void>.delayed(const Duration(milliseconds: 900)), // даём анимации доиграть, не мигаем
     ]);
-    // ignore: unused_local_variable
-    results;
     bool loggedIn = false;
     if (Api.instance.isLoggedIn) {
       final res = await Api.instance.me();

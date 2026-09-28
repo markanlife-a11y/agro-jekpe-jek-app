@@ -66,9 +66,14 @@ class Api {
   Future<Map<String, dynamic>> loginEmail(String email, String password) =>
       _post('/miniapp/api/auth/login', {'email': email, 'password': password});
 
-  // telegramAuthPayload — сырые поля из Telegram Login Widget (id, first_name, ..., hash).
-  Future<Map<String, dynamic>> linkTelegram(Map<String, dynamic> telegramAuthPayload) =>
-      _post('/miniapp/api/auth/link-telegram', telegramAuthPayload);
+  // Привязка Telegram — код + обычная ссылка t.me/bot?start=link_<code>, открывается системой
+  // напрямую (никакого WebView): надёжнее, чем Telegram Login Widget в WebView, который на
+  // практике не всегда возвращал подтверждение обратно в приложение.
+  Future<Map<String, dynamic>> telegramLinkCode() => _post('/miniapp/api/auth/telegram-link-code');
+  Future<Map<String, dynamic>> telegramLinkStatus(String code) => _post('/miniapp/api/auth/telegram-link-status', {'code': code});
+
+  Future<Map<String, dynamic>> updateProfile({String? avatarId, String? frameId}) =>
+      _post('/miniapp/api/profile/update', {'avatarId': avatarId, 'frameId': frameId});
 
   // --- Главный экран ---
   Future<Map<String, dynamic>> me() => _post('/miniapp/api/me');

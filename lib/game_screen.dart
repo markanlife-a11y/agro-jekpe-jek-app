@@ -48,13 +48,11 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void initState() {
     super.initState();
-    GameAudio.instance.playBattleStart();
     _loadCurrent();
   }
 
   @override
   void dispose() {
-    GameAudio.instance.stopAll();
     _pollTimer?.cancel();
     _speech.stop();
     _openAnswerCtrl.dispose();
@@ -89,6 +87,7 @@ class _GameScreenState extends State<GameScreen> {
       _partialTranscript = '';
       _phase = _Phase.question;
     });
+    GameAudio.instance.playQuestionCue(); // "attack" — именно на показ вопроса, не один раз на бой
     if (_item?['type'] == 'open') {
       _beginListening();
     }
@@ -292,17 +291,9 @@ class _GameScreenState extends State<GameScreen> {
   Widget _buildBody() {
     switch (_phase) {
       case _Phase.loading:
+        return const Center(child: ThinkingIndicator(label: 'Загружаю…'));
       case _Phase.grading:
-        return Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(),
-              const SizedBox(height: 12),
-              Text(_phase == _Phase.grading ? 'Проверяю ответ…' : 'Загружаю…'),
-            ],
-          ),
-        );
+        return const Center(child: ThinkingIndicator(label: 'Проверяю ответ…', cycle: true));
       case _Phase.question:
         return _buildQuestion();
       case _Phase.verdict:
@@ -528,8 +519,8 @@ class _GameScreenState extends State<GameScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 18),
+            const ThinkingIndicator(label: ''),
+            const SizedBox(height: 10),
             const Text('✅ Ваши ответы приняты!', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
             const SizedBox(height: 8),
             Text('Ждём $opponentName — обновится само, как только доиграет.', textAlign: TextAlign.center),
@@ -642,6 +633,80 @@ class _GameScreenState extends State<GameScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(color: AgroColors.green.withOpacity(0.12), borderRadius: BorderRadius.circular(20)),
       child: Text(text, style: const TextStyle(color: AgroColors.greenDark, fontWeight: FontWeight.bold, fontSize: 11.5)),
+    );
+  }
+}
+
+/// Анимированный индикатор загрузки/проверки — вращающийся колос вместо голого спиннера,
+/// с мягкой пульсацией и (для проверки ответа) сменяющимися фразами, чтобы ожидание не
+/// ощущалось "зависшим".
+class ThinkingIndicator extends StatefulWidget {
+  final String label;
+  final bool cycle;
+  const ThinkingIndicator({required this.label, this.cycle = false});
+
+  @override
+  State<ThinkingIndicator> createState() => ThinkingIndicatorState();
+}
+
+class ThinkingIndicatorState extends State<ThinkingIndicator> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Timer? _cycleTimer;
+  int _phraseIdx = 0;
+
+  static const _phrases = ['Проверяю ответ…', 'Сверяю с базой знаний…', 'Почти готово…'];
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat();
+    _cycleTimer = widget.cycle
+        ? Timer.periodic(const Duration(milliseconds: 1300), (_) {
+            if (mounted) setState(() => _phraseIdx = (_phraseIdx + 1) % _phrases.length);
+          })
+        : null;
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _cycleTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = widget.cycle ? _phrases[_phraseIdx] : widget.label;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AnimatedBuilder(
+          animation: _ctrl,
+          builder: (context, child) {
+            final bounce = 1.0 + 0.12 * (0.5 - (_ctrl.value - 0.5).abs()) * 2;
+            return Transform.rotate(
+              angle: _ctrl.value * 6.28319,
+              child: Transform.scale(scale: bounce, child: child),
+            );
+          },
+          child: Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: const LinearGradient(colors: [AgroColors.greenLight, AgroColors.green]),
+              boxShadow: [BoxShadow(color: AgroColors.green.withOpacity(0.35), blurRadius: 12)],
+            ),
+            alignment: Alignment.center,
+            child: const Text('🌾', style: TextStyle(fontSize: 26)),
+          ),
+        ),
+        const SizedBox(height: 16),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 250),
+          child: Text(text, key: ValueKey(text), style: const TextStyle(fontSize: 13.5, color: Colors.black54)),
+        ),
+      ],
     );
   }
 }

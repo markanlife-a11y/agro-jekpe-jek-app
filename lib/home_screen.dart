@@ -6,9 +6,12 @@ import 'package:flutter/services.dart';
 import 'api.dart';
 import 'sound.dart';
 import 'theme.dart';
+import 'profile_assets.dart';
 import 'queue_screen.dart';
 import 'game_screen.dart';
 import 'settings_screen.dart';
+
+// ThinkingIndicator доступен через game_screen.dart (единая точка определения виджета).
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -54,7 +57,12 @@ class _HomeScreenState extends State<HomeScreen> {
   void _openSettings() {
     Haptics.tap();
     Navigator.of(context)
-        .push(MaterialPageRoute(builder: (_) => SettingsScreen(account: _data?['account'] as Map<String, dynamic>?)))
+        .push(MaterialPageRoute(
+          builder: (_) => SettingsScreen(
+            account: _data?['account'] as Map<String, dynamic>?,
+            user: _data?['user'] as Map<String, dynamic>?,
+          ),
+        ))
         .then((_) => _load());
   }
 
@@ -110,7 +118,7 @@ class _HomeScreenState extends State<HomeScreen> {
       body: RefreshIndicator(
         onRefresh: _load,
         child: _loading
-            ? const Center(child: CircularProgressIndicator())
+            ? const Center(child: ThinkingIndicator(label: 'Загружаю…'))
             : _error != null
                 ? _buildErrorBody()
                 : _buildBody(),
@@ -142,8 +150,16 @@ class _HomeScreenState extends State<HomeScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Text('Привет, ${user['firstName'] ?? user['username'] ?? 'агроном'} 🌾', style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 14),
+        Row(
+          children: [
+            ProfileAvatar(avatarId: user['avatarId']?.toString(), frameId: user['frameId']?.toString(), size: 52),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text('Привет, ${user['firstName'] ?? user['username'] ?? 'агроном'} 🌾', style: Theme.of(context).textTheme.titleMedium),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
         Row(
           children: [
             Expanded(child: FilledButton.icon(onPressed: _startRandom, icon: const Icon(Icons.casino), label: const Text('Случайный'))),
@@ -241,7 +257,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final friendChatId = (f['friendChatId'] as num).toInt();
     final busy = _busyChallenge.contains(friendChatId);
     return ListTile(
-      leading: _avatar(name),
+      leading: ProfileAvatar(avatarId: f['avatarId']?.toString(), frameId: f['frameId']?.toString(), size: 42),
       title: Text(name),
       subtitle: Text('${f['gamesPlayed']} игр · ${f['wins']}W-${f['losses']}L-${f['draws']}D'),
       trailing: OutlinedButton(

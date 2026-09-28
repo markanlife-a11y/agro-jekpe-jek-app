@@ -1,13 +1,11 @@
-// Экран входа — email+пароль как основной способ (без внешних подтверждений), Telegram —
-// как дополнительный (для тех, кто предпочитает). Полностью нативный интерфейс с брендингом
-// AgroAiqyn — WebView открывается ТОЛЬКО при явном нажатии "Войти через Telegram", отдельным
-// экраном, а не как часть основного вида (сам вход через Telegram технически всегда идёт через
-// веб-виджет Telegram — это не обходится, но не должно быть первым, что видит пользователь).
+// Экран входа — email+пароль, без внешних подтверждений и без WebView вообще (Telegram Login
+// Widget в WebView оказался ненадёжным на практике — подтверждение в Telegram не всегда
+// долетало обратно до приложения). Привязать Telegram (для уведомлений о вызовах на батл)
+// можно позже в "Настройках" — там это сделано надёжно, через код + обычную ссылку t.me/...
 import 'package:flutter/material.dart';
 import 'api.dart';
 import 'theme.dart';
 import 'home_screen.dart';
-import 'telegram_webview.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -16,7 +14,7 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStateMixin {
+class _LoginScreenState extends State<LoginScreen> {
   final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
@@ -58,31 +56,12 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
     Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const HomeScreen()));
   }
 
-  void _openTelegramLogin() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => TelegramWebViewScreen(
-          title: 'Вход через Telegram',
-          url: loginPageUrl,
-          onSuccess: (data) async {
-            final token = data['token']?.toString();
-            if (token == null) return;
-            await Api.instance.setSession(token);
-            if (!mounted) return;
-            Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const HomeScreen()));
-          },
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Брендированный фон — поле подсолнухов AgroAiqyn, слегка затемнённое для читаемости.
           Image.asset('assets/images/banner.jpg', fit: BoxFit.cover),
           Container(color: Colors.black.withOpacity(0.55)),
           SafeArea(
@@ -96,10 +75,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                     child: Image.asset('assets/images/logo.jpg', width: 96, height: 96, fit: BoxFit.cover),
                   ),
                   const SizedBox(height: 14),
-                  const Text(
-                    '⚔️ Agro Jekpe-jek',
-                    style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
+                  const Text('⚔️ Agro Jekpe-jek', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
                   const Text('AgroAiqyn 🌾', style: TextStyle(color: Colors.white70, fontSize: 13, letterSpacing: 1)),
                   const SizedBox(height: 28),
                   Card(
@@ -132,6 +108,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                           TextField(
                             controller: _passwordCtrl,
                             obscureText: _obscure,
+                            onSubmitted: (_) => _submitEmail(),
                             decoration: InputDecoration(
                               labelText: 'Пароль',
                               prefixIcon: const Icon(Icons.lock_outline),
@@ -146,7 +123,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                             const SizedBox(height: 4),
                             const Align(
                               alignment: Alignment.centerRight,
-                              child: Text('Email нужен только для входа и восстановления пароля.', style: TextStyle(fontSize: 11, color: Colors.black45)),
+                              child: Text('Email — только для входа и восстановления пароля.', style: TextStyle(fontSize: 11, color: Colors.black45)),
                             ),
                           ],
                           if (_error != null) ...[
@@ -164,14 +141,11 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                             onPressed: _busy ? null : () => setState(() => _registerMode = !_registerMode),
                             child: Text(_registerMode ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'),
                           ),
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 4),
-                            child: Row(children: [Expanded(child: Divider()), Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('или', style: TextStyle(color: Colors.black38))), Expanded(child: Divider())]),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: _busy ? null : _openTelegramLogin,
-                            icon: const Icon(Icons.send, size: 18),
-                            label: const Text('Войти через Telegram'),
+                          const SizedBox(height: 4),
+                          const Text(
+                            'Telegram можно будет привязать позже в Настройках — для уведомлений о вызовах на батл.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 11, color: Colors.black38),
                           ),
                         ],
                       ),

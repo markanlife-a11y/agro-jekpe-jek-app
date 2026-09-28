@@ -75,10 +75,8 @@ class _QueueScreenState extends State<QueueScreen> {
             mainAxisSize: MainAxisSize.min,
             children: _error == null
                 ? [
-                    const CircularProgressIndicator(),
-                    const SizedBox(height: 20),
-                    const Text('Ищем соперника…', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
+                    const ThinkingIndicator(label: 'Ищем соперника…'),
+                    const SizedBox(height: 12),
                     const Text('Обычно занимает пару секунд, если сейчас кто-то ещё в поиске.', textAlign: TextAlign.center),
                     const SizedBox(height: 24),
                     OutlinedButton(onPressed: _cancel, child: const Text('❌ Отменить поиск')),
