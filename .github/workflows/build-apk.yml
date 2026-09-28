@@ -30,8 +30,9 @@ jobs:
 
       - name: Overlay our app code onto the scaffold
         run: |
-          rm -rf app/lib
+          rm -rf app/lib app/assets
           cp -r overlay/lib app/lib
+          cp -r overlay/assets app/assets
           cp overlay/pubspec.yaml app/pubspec.yaml
 
       - name: Patch AndroidManifest.xml (app name + microphone permission)

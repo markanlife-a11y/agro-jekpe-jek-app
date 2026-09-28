@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'api.dart';
 import 'sound.dart';
+import 'audio.dart';
 import 'theme.dart';
 import 'home_screen.dart';
 
@@ -47,11 +48,13 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void initState() {
     super.initState();
+    GameAudio.instance.playBattleStart();
     _loadCurrent();
   }
 
   @override
   void dispose() {
+    GameAudio.instance.stopAll();
     _pollTimer?.cancel();
     _speech.stop();
     _openAnswerCtrl.dispose();

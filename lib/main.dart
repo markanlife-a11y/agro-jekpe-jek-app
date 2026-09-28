@@ -7,6 +7,7 @@
 import 'package:flutter/material.dart';
 import 'theme.dart';
 import 'api.dart';
+import 'audio.dart';
 import 'login_screen.dart';
 import 'home_screen.dart';
 
@@ -50,6 +51,7 @@ class _SplashGateState extends State<SplashGate> {
   }
 
   Future<void> _check() async {
+    await GameAudio.instance.init();
     await Api.instance.loadSession();
     if (Api.instance.isLoggedIn) {
       final res = await Api.instance.me();
