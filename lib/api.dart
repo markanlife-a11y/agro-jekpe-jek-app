@@ -71,6 +71,13 @@ class Api {
   // практике не всегда возвращал подтверждение обратно в приложение.
   Future<Map<String, dynamic>> telegramLinkCode() => _post('/miniapp/api/auth/telegram-link-code');
   Future<Map<String, dynamic>> telegramLinkStatus(String code) => _post('/miniapp/api/auth/telegram-link-status', {'code': code});
+  Future<Map<String, dynamic>> telegramUnlink() => _post('/miniapp/api/auth/telegram-unlink');
+
+  // Вход через Telegram прямо с экрана логина — тот же код+ссылка механизм, но БЕЗ авторизации
+  // (это и есть способ авторизоваться) и без email-аккаунта: как только бот подтвердит код,
+  // сразу выдаётся сессия для настоящего chat_id.
+  Future<Map<String, dynamic>> telegramLoginCode() => _post('/miniapp/api/auth/telegram-login-code');
+  Future<Map<String, dynamic>> telegramLoginStatus(String code) => _post('/miniapp/api/auth/telegram-login-status', {'code': code});
 
   Future<Map<String, dynamic>> updateProfile({String? avatarId, String? frameId}) =>
       _post('/miniapp/api/profile/update', {'avatarId': avatarId, 'frameId': frameId});
@@ -94,6 +101,8 @@ class Api {
   Future<Map<String, dynamic>> battleStatus(int battleId) => _post('/miniapp/api/battle/status', {'battleId': battleId});
   Future<Map<String, dynamic>> answerMcq(int quizId, int optionIndex) =>
       _post('/miniapp/api/battle/answer', {'quizId': quizId, 'optionIndex': optionIndex});
+  Future<Map<String, dynamic>> answerTimeout(int quizId) =>
+      _post('/miniapp/api/battle/answer', {'quizId': quizId, 'timedOut': true});
   Future<Map<String, dynamic>> answerOpen(int quizId, String text) =>
       _post('/miniapp/api/battle/answer', {'quizId': quizId, 'text': text});
   Future<Map<String, dynamic>> dispute(int quizId, String text) =>

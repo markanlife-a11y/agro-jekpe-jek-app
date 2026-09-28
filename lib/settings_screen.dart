@@ -29,6 +29,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _linkDeepLink;
   Timer? _linkPollTimer;
   bool _linkBusy = false;
+  bool _unlinkBusy = false;
 
   @override
   void initState() {
@@ -97,6 +98,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_linkDeepLink == null) return;
     final uri = Uri.parse(_linkDeepLink!);
     await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _unlinkTelegram() async {
+    Haptics.tap();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Отвязать Telegram?'),
+        content: const Text('Уведомления о вызовах на батл в Telegram перестанут приходить. Вход по почте продолжит работать как обычно.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Отвязать')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _unlinkBusy = true);
+    final res = await Api.instance.telegramUnlink();
+    if (!mounted) return;
+    setState(() => _unlinkBusy = false);
+    if (res['ok'] != true) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('⚠️ ${res['message'] ?? 'не получилось'}')));
+      return;
+    }
+    setState(() => _account = {..._account ?? {}, 'linkedTelegramUsername': null});
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Telegram отвязан')));
   }
 
   @override
@@ -174,10 +201,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const Divider(height: 1),
                   if (linkedUsername != null)
                     ListTile(
-                      leading: const Icon(Icons.send),
+                      leading: const Icon(Icons.check_circle, color: AgroColors.green),
                       title: const Text('Telegram'),
                       subtitle: Text('Привязан: $linkedUsername'),
-                      trailing: const Icon(Icons.check_circle, color: AgroColors.green),
+                      trailing: _unlinkBusy
+                          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                          : TextButton(onPressed: _unlinkTelegram, child: const Text('Отвязать', style: TextStyle(color: AgroColors.danger))),
                     )
                   else if (_linkDeepLink != null)
                     Padding(

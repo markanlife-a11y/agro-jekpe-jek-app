@@ -35,15 +35,17 @@ jobs:
           cp -r overlay/assets app/assets
           cp overlay/pubspec.yaml app/pubspec.yaml
 
-      # <queries> обязателен на Android 11+ (API 30+, package visibility) — без него
-      # url_launcher не сможет найти установленный Telegram, чтобы передать ему ссылку
-      # tg://resolve?domain=... (вход/привязка через Telegram Login Widget, см.
-      # lib/telegram_webview.dart) — launchUrl тихо считал бы, что приложения "нет".
-      - name: Patch AndroidManifest.xml (app name, microphone permission, tg:// queries)
+      # <queries> обязателен на Android 11+ (API 30+, package visibility) — без него url_launcher
+      # не сможет найти установленный Telegram, чтобы передать ему обычную https-ссылку
+      # t.me/bot?start=... (вход/привязка через код+ссылку, см. lib/login_screen.dart,
+      # lib/settings_screen.dart) — launchUrl тихо считал бы, что приложения "нет".
+      # WAKE_LOCK — фоновая музыка (см. lib/audio.dart, stayAwake) не должна замолкать, когда
+      # гаснет экран/блокируется телефон.
+      - name: Patch AndroidManifest.xml (app name, permissions, tg:// queries)
         run: |
           MANIFEST=app/android/app/src/main/AndroidManifest.xml
           sed -i 's/android:label="app"/android:label="Agro Jekpe-jek"/' "$MANIFEST"
-          sed -i 's#<uses-permission android:name="android.permission.INTERNET"/>#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>#' "$MANIFEST"
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET"/>#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"/>#' "$MANIFEST"
           sed -i 's#</manifest>#    <queries>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="tg" /></intent>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent>\n    </queries>\n</manifest>#' "$MANIFEST"
           echo "--- AndroidManifest.xml ---"
           cat "$MANIFEST"

@@ -21,7 +21,7 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   _Phase _phase = _Phase.loading;
   String _errorMessage = '';
 
@@ -45,6 +45,19 @@ class _GameScreenState extends State<GameScreen> {
   Timer? _pollTimer;
   bool _submitting = false;
 
+  // 20-секундный таймер на MCQ-вопрос (жалоба: "должен быть прогресс тайминга, можно по 20
+  // секунд") — при истечении сам шлёт "тайм-аут" (засчитывается неверным, без выбранного
+  // варианта). Для открытых вопросов не используется — там уже свой голосовой темп (пауза
+  // определяет конец фразы).
+  AnimationController? _questionTimer;
+
+  // Автопереход к следующему вопросу через 5 сек после вердикта (жалоба: "автопереход можно
+  // сделать 5 сек либо кнопка Далее внизу") — кнопка "Далее" при этом всё равно всегда доступна
+  // сразу. Не запускается, если можно оспорить (открытый неверный ответ) — не отнимаем время на
+  // раздумье и написание спора.
+  Timer? _autoAdvanceTimer;
+  int? _autoAdvanceSeconds;
+
   @override
   void initState() {
     super.initState();
@@ -54,13 +67,65 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _autoAdvanceTimer?.cancel();
+    _questionTimer?.dispose();
     _speech.stop();
     _openAnswerCtrl.dispose();
     _disputeCtrl.dispose();
     super.dispose();
   }
 
+  void _cancelAutoAdvance() {
+    _autoAdvanceTimer?.cancel();
+    _autoAdvanceTimer = null;
+    if (_autoAdvanceSeconds != null) setState(() => _autoAdvanceSeconds = null);
+  }
+
+  void _startAutoAdvance() {
+    _autoAdvanceTimer?.cancel();
+    setState(() => _autoAdvanceSeconds = 5);
+    _autoAdvanceTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      final next = (_autoAdvanceSeconds ?? 1) - 1;
+      if (next <= 0) {
+        t.cancel();
+        _autoAdvanceTimer = null;
+        _autoAdvanceSeconds = null;
+        _next();
+      } else {
+        setState(() => _autoAdvanceSeconds = next);
+      }
+    });
+  }
+
+  void _startQuestionTimer() {
+    _questionTimer?.dispose();
+    final ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 20));
+    _questionTimer = ctrl;
+    ctrl.addStatusListener((status) {
+      if (status == AnimationStatus.completed) _onQuestionTimeout();
+    });
+    ctrl.forward();
+  }
+
+  Future<void> _onQuestionTimeout() async {
+    if (_submitting || _phase != _Phase.question || _quizId == null) return;
+    Haptics.wrong();
+    setState(() {
+      _submitting = true;
+      _selectedOption = null;
+      _phase = _Phase.grading;
+    });
+    final res = await Api.instance.answerTimeout(_quizId!);
+    _onAnswerResult(res);
+  }
+
   Future<void> _loadCurrent() async {
+    _cancelAutoAdvance();
+    _questionTimer?.stop();
     setState(() => _phase = _Phase.loading);
     final res = await Api.instance.battlePlay(widget.battleId);
     if (!mounted) return;
@@ -90,6 +155,8 @@ class _GameScreenState extends State<GameScreen> {
     GameAudio.instance.playQuestionCue(); // "attack" — именно на показ вопроса, не один раз на бой
     if (_item?['type'] == 'open') {
       _beginListening();
+    } else {
+      _startQuestionTimer();
     }
   }
 
@@ -183,6 +250,7 @@ class _GameScreenState extends State<GameScreen> {
   Future<void> _submitMcq(int optionIndex) async {
     if (_submitting || _quizId == null) return;
     Haptics.tap();
+    _questionTimer?.stop();
     setState(() {
       _submitting = true;
       _selectedOption = optionIndex;
@@ -223,6 +291,9 @@ class _GameScreenState extends State<GameScreen> {
       _answerRes = res;
       _phase = _Phase.verdict;
     });
+    // Автопереход через 5 сек — но не тогда, когда можно оспорить (открытый неверный ответ):
+    // не отнимаем время на раздумье, пользователь сам решает, когда жать "Далее".
+    if (res['canDispute'] != true) _startAutoAdvance();
   }
 
   Future<void> _sendDispute(String text) async {
@@ -244,6 +315,7 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   Future<void> _next() async {
+    _cancelAutoAdvance();
     Haptics.nav();
     final res = _answerRes;
     if (res == null) return;
@@ -292,12 +364,13 @@ class _GameScreenState extends State<GameScreen> {
     switch (_phase) {
       case _Phase.loading:
         return const Center(child: ThinkingIndicator(label: 'Загружаю…'));
-      case _Phase.grading:
-        return const Center(child: ThinkingIndicator(label: 'Проверяю ответ…', cycle: true));
+      // Раньше "Проверяю ответ" полностью подменяло экран отдельной страницей-вердиктом —
+      // топорно и рывком. Теперь вопрос и карточки вариантов остаются на месте всё время,
+      // проверка и вердикт просто анимированно достраиваются под ними на том же экране.
       case _Phase.question:
-        return _buildQuestion();
+      case _Phase.grading:
       case _Phase.verdict:
-        return _buildVerdict();
+        return _buildQuestion();
       case _Phase.waitingOpponent:
         return _buildWaiting();
       case _Phase.roundSummary:
@@ -332,6 +405,7 @@ class _GameScreenState extends State<GameScreen> {
     final type = item['type'] as String;
     final idx = (item['idx'] as num).toInt();
     final total = (item['total'] as num).toInt();
+    final locked = _phase != _Phase.question; // grading или verdict — карточки больше не тапаются
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -339,6 +413,10 @@ class _GameScreenState extends State<GameScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _progressBar(idx, total),
+          if (type == 'mcq' && _questionTimer != null) ...[
+            const SizedBox(height: 10),
+            _QuestionTimerBar(controller: _questionTimer!, locked: locked),
+          ],
           const SizedBox(height: 12),
           Card(
             child: Padding(
@@ -361,32 +439,173 @@ class _GameScreenState extends State<GameScreen> {
             ),
           ),
           const SizedBox(height: 14),
-          if (type == 'mcq') _buildMcqOptions(item) else _buildOpenAnswer(),
+          if (type == 'mcq') _buildMcqGrid(item) else _buildOpenAnswer(),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeOut,
+            alignment: Alignment.topCenter,
+            child: locked ? _buildResultPanel() : const SizedBox(width: double.infinity),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildMcqOptions(Map<String, dynamic> item) {
+  // 2 карточки в ряд (жалоба: "ответы должны быть по два в ряд") — после ответа карточка
+  // подсветится сама (зелёным/красным), правильный вариант тоже подсвечивается зелёным, если
+  // выбран был не он; ответ друга (если уже ответил в этом раунде первым) отмечается бейджем
+  // с его именем прямо на той карточке, которую он выбрал.
+  Widget _buildMcqGrid(Map<String, dynamic> item) {
     final options = (item['options'] as List).cast<dynamic>();
-    return Column(
-      children: List.generate(options.length, (i) {
+    final locked = _phase != _Phase.question;
+    final correctIndex = locked ? (_answerRes?['correctIndex'] as num?)?.toInt() : null;
+    final friendText = locked ? _answerRes?['friendAnswerText'] as String? : null;
+    final friendName = _answerRes?['friendPlayerName'] as String?;
+    int? friendIdx;
+    if (friendText != null) {
+      final i = options.indexWhere((o) => o.toString() == friendText);
+      if (i >= 0) friendIdx = i;
+    }
+
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: options.length,
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 2.3,
+      ),
+      itemBuilder: (context, i) {
         final letter = String.fromCharCode(65 + i);
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 9),
-          child: OutlinedButton(
-            onPressed: () => _submitMcq(i),
-            style: OutlinedButton.styleFrom(alignment: Alignment.centerLeft),
-            child: Row(
-              children: [
-                CircleAvatar(radius: 12, backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest, child: Text(letter, style: const TextStyle(fontSize: 12))),
-                const SizedBox(width: 10),
-                Expanded(child: Text(options[i].toString())),
-              ],
+        final isSelected = _selectedOption == i;
+        final isCorrectCard = locked && correctIndex != null && i == correctIndex;
+        final isWrongSelected = locked && isSelected && correctIndex != null && i != correctIndex;
+        final isFriendCard = friendIdx == i;
+
+        Color? bg;
+        Color borderColor = Theme.of(context).colorScheme.outlineVariant;
+        double borderWidth = 1;
+        if (isCorrectCard) {
+          bg = AgroColors.green.withOpacity(0.16);
+          borderColor = AgroColors.green;
+          borderWidth = 2;
+        } else if (isWrongSelected) {
+          bg = AgroColors.danger.withOpacity(0.14);
+          borderColor = AgroColors.danger;
+          borderWidth = 2;
+        } else if (!locked && isSelected) {
+          borderColor = AgroColors.gold;
+          borderWidth = 2;
+        }
+
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOut,
+          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(14), border: Border.all(color: borderColor, width: borderWidth)),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: locked ? null : () => _submitMcq(i),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Row(
+                      children: [
+                        CircleAvatar(radius: 11, backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest, child: Text(letter, style: const TextStyle(fontSize: 11))),
+                        const SizedBox(width: 8),
+                        Expanded(child: Text(options[i].toString(), style: const TextStyle(fontSize: 13), maxLines: 3, overflow: TextOverflow.ellipsis)),
+                        if (isCorrectCard) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.check_circle, color: AgroColors.green, size: 18)),
+                        if (isWrongSelected) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.cancel, color: AgroColors.danger, size: 18)),
+                      ],
+                    ),
+                    if (isFriendCard)
+                      Positioned(
+                        right: -2,
+                        top: -6,
+                        child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 110),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(color: AgroColors.greenDark, borderRadius: BorderRadius.circular(20)),
+                            child: Text('👥 ${friendName ?? ""}', style: const TextStyle(fontSize: 9, color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
         );
-      }),
+      },
+    );
+  }
+
+  // Появляется анимированно под карточками — во время проверки компактный индикатор, после
+  // неё разбор с оспариванием/переходом дальше. Раньше это была ОТДЕЛЬНАЯ страница-вердикт,
+  // из-за чего смена экрана ощущалась рывком.
+  Widget _buildResultPanel() {
+    if (_phase == _Phase.grading) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 16),
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 14),
+            child: ThinkingIndicator(label: 'Проверяю ответ…', cycle: true, compact: true),
+          ),
+        ),
+      );
+    }
+    if (_phase != _Phase.verdict || _answerRes == null) return const SizedBox.shrink();
+
+    final res = _answerRes!;
+    final correct = res['correct'] == true;
+    final canDispute = res['canDispute'] == true && _disputeReply == null;
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Card(
+            color: (correct ? AgroColors.green : AgroColors.danger).withOpacity(0.12),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(correct ? '✅ Верно' : '❌ Не засчитано', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  const SizedBox(height: 6),
+                  Text(res['explanation']?.toString() ?? ''),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              if (canDispute) Expanded(child: OutlinedButton(onPressed: _showDisputeSheet, child: const Text('⚖️ Оспорить'))),
+              if (canDispute) const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton(
+                  onPressed: _next,
+                  child: Text(_autoAdvanceSeconds != null ? 'Далее ($_autoAdvanceSeconds)' : '➡️ Далее'),
+                ),
+              ),
+            ],
+          ),
+          if (_disputeReply != null) ...[
+            const SizedBox(height: 14),
+            if (_disputeReply!['verdictChanged'] == true)
+              const Padding(padding: EdgeInsets.only(bottom: 6), child: Text('🔄 Вердикт пересмотрен на «Засчитано»', style: TextStyle(color: AgroColors.green, fontWeight: FontWeight.bold))),
+            Card(child: Padding(padding: const EdgeInsets.all(12), child: Text('🌾 ${_disputeReply!['reply']}'))),
+          ],
+        ],
+      ),
     );
   }
 
@@ -432,53 +651,8 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  Widget _buildVerdict() {
-    final res = _answerRes!;
-    final correct = res['correct'] == true;
-    final canDispute = res['canDispute'] == true && _disputeReply == null;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Card(
-            color: (correct ? AgroColors.green : AgroColors.danger).withOpacity(0.12),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(correct ? '✅ Верно' : '❌ Не засчитано', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  const SizedBox(height: 6),
-                  Text(res['explanation']?.toString() ?? ''),
-                ],
-              ),
-            ),
-          ),
-          if (res['friendNote'] != null) ...[
-            const SizedBox(height: 10),
-            Card(child: Padding(padding: const EdgeInsets.all(12), child: Text('👥 ${res['friendNote']}'))),
-          ],
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              if (canDispute) Expanded(child: OutlinedButton(onPressed: _showDisputeSheet, child: const Text('⚖️ Оспорить'))),
-              if (canDispute) const SizedBox(width: 10),
-              Expanded(child: FilledButton(onPressed: _next, child: const Text('➡️ Далее'))),
-            ],
-          ),
-          if (_disputeReply != null) ...[
-            const SizedBox(height: 14),
-            if (_disputeReply!['verdictChanged'] == true)
-              const Padding(padding: EdgeInsets.only(bottom: 6), child: Text('🔄 Вердикт пересмотрен на «Засчитано»', style: TextStyle(color: AgroColors.green, fontWeight: FontWeight.bold))),
-            Card(child: Padding(padding: const EdgeInsets.all(12), child: Text('🌾 ${_disputeReply!['reply']}'))),
-          ],
-        ],
-      ),
-    );
-  }
-
   void _showDisputeSheet() {
+    _cancelAutoAdvance();
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -553,11 +727,8 @@ class _GameScreenState extends State<GameScreen> {
             const SizedBox(height: 20),
             if (myTurnNext)
               SizedBox(width: double.infinity, child: FilledButton(onPressed: _loadCurrent, child: const Text('▶️ Играть дальше')))
-            else ...[
-              const CircularProgressIndicator(),
-              const SizedBox(height: 8),
-              Text('Ждём ход $opponentName…'),
-            ],
+            else
+              ThinkingIndicator(label: 'Ждём ход $opponentName…'),
             const SizedBox(height: 14),
             OutlinedButton(onPressed: _backHome, child: const Text('На главный экран')),
           ],
@@ -643,7 +814,10 @@ class _GameScreenState extends State<GameScreen> {
 class ThinkingIndicator extends StatefulWidget {
   final String label;
   final bool cycle;
-  const ThinkingIndicator({required this.label, this.cycle = false});
+  // Компактный горизонтальный вариант — для встраивания под карточками вариантов ответа
+  // (см. GameScreen._buildResultPanel), а не на весь экран.
+  final bool compact;
+  const ThinkingIndicator({required this.label, this.cycle = false, this.compact = false});
 
   @override
   State<ThinkingIndicator> createState() => ThinkingIndicatorState();
@@ -677,36 +851,81 @@ class ThinkingIndicatorState extends State<ThinkingIndicator> with SingleTickerP
   @override
   Widget build(BuildContext context) {
     final text = widget.cycle ? _phrases[_phraseIdx] : widget.label;
+    final size = widget.compact ? 34.0 : 56.0;
+    final icon = AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, child) {
+        final bounce = 1.0 + 0.12 * (0.5 - (_ctrl.value - 0.5).abs()) * 2;
+        return Transform.rotate(
+          angle: _ctrl.value * 6.28319,
+          child: Transform.scale(scale: bounce, child: child),
+        );
+      },
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(colors: [AgroColors.greenLight, AgroColors.green]),
+          boxShadow: [BoxShadow(color: AgroColors.green.withOpacity(0.35), blurRadius: 12)],
+        ),
+        alignment: Alignment.center,
+        child: Text('🌾', style: TextStyle(fontSize: widget.compact ? 16 : 26)),
+      ),
+    );
+    if (widget.compact) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          icon,
+          const SizedBox(width: 14),
+          Flexible(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              child: Text(text, key: ValueKey(text), style: const TextStyle(fontSize: 13.5, color: Colors.black54)),
+            ),
+          ),
+        ],
+      );
+    }
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        AnimatedBuilder(
-          animation: _ctrl,
-          builder: (context, child) {
-            final bounce = 1.0 + 0.12 * (0.5 - (_ctrl.value - 0.5).abs()) * 2;
-            return Transform.rotate(
-              angle: _ctrl.value * 6.28319,
-              child: Transform.scale(scale: bounce, child: child),
-            );
-          },
-          child: Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: const LinearGradient(colors: [AgroColors.greenLight, AgroColors.green]),
-              boxShadow: [BoxShadow(color: AgroColors.green.withOpacity(0.35), blurRadius: 12)],
-            ),
-            alignment: Alignment.center,
-            child: const Text('🌾', style: TextStyle(fontSize: 26)),
-          ),
-        ),
+        icon,
         const SizedBox(height: 16),
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 250),
           child: Text(text, key: ValueKey(text), style: const TextStyle(fontSize: 13.5, color: Colors.black54)),
         ),
       ],
+    );
+  }
+}
+
+/// Полоса обратного отсчёта на MCQ-вопрос (20 секунд) — зелёная → жёлтая → красная по мере
+/// приближения к нулю, останавливается (и просто гаснет), как только вопрос отвечен, чтобы не
+/// продолжала бежать поверх уже подсвеченных карточек.
+class _QuestionTimerBar extends StatelessWidget {
+  final AnimationController controller;
+  final bool locked;
+  const _QuestionTimerBar({required this.controller, required this.locked});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, child) {
+        final remaining = 1.0 - controller.value;
+        final color = remaining > 0.5 ? AgroColors.green : (remaining > 0.25 ? AgroColors.gold : AgroColors.danger);
+        return AnimatedOpacity(
+          duration: const Duration(milliseconds: 250),
+          opacity: locked ? 0.35 : 1,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(value: remaining, minHeight: 6, color: color, backgroundColor: color.withOpacity(0.15)),
+          ),
+        );
+      },
     );
   }
 }

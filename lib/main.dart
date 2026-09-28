@@ -5,6 +5,7 @@
 // Бэкенд — тот же Cloudflare Worker, что и у бота (см. lib/api.dart) — отдельной
 // синхронизации данных нет, это буквально один и тот же сервер и база.
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'theme.dart';
 import 'api.dart';
 import 'audio.dart';
@@ -71,6 +72,7 @@ class _SplashGateState extends State<SplashGate> with SingleTickerProviderStateM
     await Future.wait<void>([
       GameAudio.instance.init(),
       Api.instance.loadSession(),
+      _requestInitialPermissions(),
       Future<void>.delayed(const Duration(milliseconds: 900)), // даём анимации доиграть, не мигаем
     ]);
     bool loggedIn = false;
@@ -80,6 +82,18 @@ class _SplashGateState extends State<SplashGate> with SingleTickerProviderStateM
       if (!loggedIn) await Api.instance.clearSession();
     }
     if (mounted) setState(() { _checked = true; _loggedIn = loggedIn; });
+  }
+
+  // Запрашиваем сразу при первом запуске, а не в момент, когда уже нужен (пользователь жаловался,
+  // что микрофон для голосовых ответов не спрашивался заранее) — микрофон нужен почти в каждой
+  // игре (открытые вопросы), так что естественно спросить один раз на старте, не дожидаясь первого
+  // открытого вопроса в глубине баттла.
+  Future<void> _requestInitialPermissions() async {
+    try {
+      await Permission.microphone.request();
+    } catch (_) {
+      // На эмуляторах без микрофона/при отказе системы — не блокируем запуск приложения.
+    }
   }
 
   @override
