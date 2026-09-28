@@ -1,38 +1,20 @@
-// Вибрация под каждое действие — как и просили: неверный ответ короткой вибрацией не
-// отделаешься, нужна именно РАЗНАЯ ДЛИТЕЛЬНОСТЬ (короткая на верный, длинная на неверный), а
-// не просто разная "сила" — поэтому используется пакет vibration с явным duration в мс, а не
-// только предустановленные HapticFeedback.*Impact() (у них нет параметра длительности).
+// Вибрация под каждое действие — встроенный Flutter HapticFeedback, без сторонних пакетов
+// (пакет vibration оказался несовместим по Android-сборке с другими плагинами — жёстко
+// зашит на старый compileSdk и конфликтовал при сборке; переиспользовать его не стали).
+// heavyImpact() на большинстве телефонов ощутимо "тяжелее"/длиннее lightImpact()/
+// mediumImpact() — неверный ответ ощущается дольше, верный короче, как и просили.
 import 'package:flutter/services.dart';
-import 'package:vibration/vibration.dart';
 
 class Haptics {
-  static Future<void> _vibrate(int ms) async {
-    try {
-      final has = await Vibration.hasVibrator();
-      if (has == true) {
-        await Vibration.vibrate(duration: ms);
-        return;
-      }
-    } catch (_) {
-      // нет доступа к вибромотору (эмулятор и т.п.) — тихо игнорируем
-    }
-  }
-
   static void tap() => HapticFeedback.lightImpact();
   static void nav() => HapticFeedback.selectionClick();
 
-  /// Короткая вибрация — верный ответ.
-  static void correct() {
-    HapticFeedback.mediumImpact();
-    _vibrate(60);
-  }
+  /// Короткий отклик — верный ответ.
+  static void correct() => HapticFeedback.mediumImpact();
 
-  /// Длинная вибрация — неверный ответ (как и просили: длиннее, чем на верный).
-  static void wrong() {
-    HapticFeedback.heavyImpact();
-    _vibrate(350);
-  }
+  /// Более выраженный, "тяжёлый" отклик — неверный ответ (длиннее и заметнее, чем на верный).
+  static void wrong() => HapticFeedback.heavyImpact();
 
-  static void win() => _vibrate(80);
-  static void lose() => _vibrate(300);
+  static void win() => HapticFeedback.mediumImpact();
+  static void lose() => HapticFeedback.heavyImpact();
 }

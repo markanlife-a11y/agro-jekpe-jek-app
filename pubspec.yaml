@@ -15,7 +15,6 @@ dependencies:
   webview_flutter: ^4.7.0
   speech_to_text: ^7.0.0
   permission_handler: ^11.3.0
-  vibration: ^2.0.0
 
 dev_dependencies:
   flutter_test:
