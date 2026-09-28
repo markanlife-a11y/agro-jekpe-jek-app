@@ -68,14 +68,29 @@ jobs:
       # не сможет найти установленный Telegram, чтобы передать ему обычную https-ссылку
       # t.me/bot?start=... (вход/привязка через код+ссылку, см. lib/login_screen.dart,
       # lib/settings_screen.dart) — launchUrl тихо считал бы, что приложения "нет".
+      #
+      # НАЙДЕНО (жалоба "при запуске приложения не просит разрешение на микрофон"): текущий
+      # `flutter create` вообще не кладёт <uses-permission android:name="INTERNET"/> в главный
+      # AndroidManifest.xml (она живёт в src/debug/AndroidManifest.xml, мержится только в debug-
+      # сборку) — старый sed-патч искал именно эту строку как якорь и НИКОГДА не находил её, а
+      # значит RECORD_AUDIO не добавлялся вообще ни в одну сборку. Без объявления permission в
+      # манифесте Android даже не показывает системный диалог запроса — просто молча отказывает.
+      # Патчим теперь от заведомо существующего тега <manifest ...> вместо несуществующей строки.
+      # Заодно android:label — та же ошибка: дефолт оказался "agro_jekpe_jek" (имя проекта), а не
+      # "app", как ожидалось, — sed на точное значение тоже был no-op; заменили на regex по
+      # любому текущему значению.
       - name: Patch AndroidManifest.xml (app name, permissions, tg:// queries)
         run: |
           MANIFEST=app/android/app/src/main/AndroidManifest.xml
-          sed -i 's/android:label="app"/android:label="Agro Jekpe-jek"/' "$MANIFEST"
-          sed -i 's#<uses-permission android:name="android.permission.INTERNET"/>#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>#' "$MANIFEST"
+          sed -i 's/android:label="[^"]*"/android:label="Agro Jekpe-jek"/' "$MANIFEST"
+          sed -i 's#<manifest xmlns:android="http://schemas.android.com/apk/res/android">#<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>#' "$MANIFEST"
           sed -i 's#</manifest>#    <queries>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="tg" /></intent>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent>\n    </queries>\n</manifest>#' "$MANIFEST"
           echo "--- AndroidManifest.xml ---"
           cat "$MANIFEST"
+          echo "--- sanity check: required permissions present? ---"
+          grep -c "RECORD_AUDIO" "$MANIFEST"
+          grep -c "POST_NOTIFICATIONS" "$MANIFEST"
+          grep -c "android.permission.INTERNET" "$MANIFEST"
 
       # Несколько плагинов (shared_preferences_android, speech_to_text, webview_flutter_android,
       # vibration) собраны под более новый Android SDK, чем ставит по умолчанию flutter create

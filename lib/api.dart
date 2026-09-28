@@ -105,6 +105,10 @@ class Api {
       _post('/miniapp/api/battle/answer', {'quizId': quizId, 'timedOut': true});
   Future<Map<String, dynamic>> answerOpen(int quizId, String text) =>
       _post('/miniapp/api/battle/answer', {'quizId': quizId, 'text': text});
+  // Голос — настоящее аудио уходит прямо в Gemini на бэкенде (та же схема, что и у голосовых
+  // сообщений в чате), а не распознанный на устройстве текст — надёжнее: см. lib/game_screen.dart.
+  Future<Map<String, dynamic>> answerOpenAudio(int quizId, String audioBase64, String mimeType) =>
+      _post('/miniapp/api/battle/answer', {'quizId': quizId, 'audioBase64': audioBase64, 'audioMimeType': mimeType});
   Future<Map<String, dynamic>> dispute(int quizId, String text) =>
       _post('/miniapp/api/battle/dispute', {'quizId': quizId, 'text': text});
 

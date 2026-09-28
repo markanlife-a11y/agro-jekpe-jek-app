@@ -1,10 +1,18 @@
 // Сам раунд баттла — вопрос (MCQ или открытый), ответ, вердикт, спор, переход между раундами
-// и итог игры. Открытый вопрос слушает пользователя СРАЗУ, без нажатия кнопок — распознавание
-// речи само определяет конец фразы по паузе (см. _startListening, pauseFor) и отправляет ответ.
+// и итог игры. Открытый вопрос слушает пользователя СРАЗУ, без нажатия кнопок — запись начинается
+// автоматически при показе вопроса; ЗАВЕРШАЕТ её явная кнопка "Готово" (или таймер-потолок), а не
+// распознавание пауз в речи — распознавание речи на устройстве (speech_to_text) было убрано
+// целиком: именно оно было источником постоянных "голосовой не работает" (молча не запускало
+// listen() на части устройств/прошивок без всякой диагностируемой причины). Вместо этого
+// записывается настоящее аудио и уходит прямо в Gemini на бэкенде (тот же способ, что и у
+// голосовых сообщений в чат-боте) — надёжнее и не зависит от стороннего движка распознавания.
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:record/record.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:auto_size_text/auto_size_text.dart';
 import 'api.dart';
 import 'sound.dart';
@@ -38,16 +46,20 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   final TextEditingController _disputeCtrl = TextEditingController();
   int? _selectedOption;
 
-  final stt.SpeechToText _speech = stt.SpeechToText();
-  bool _listening = false;
-  // Пока идёт setup распознавания речи (initialize/listen ещё не отработали) — жалоба: "сразу
-  // после вопроса он не пишет что слушает" — раньше в этот промежуток вообще ничего не
-  // показывалось, экран выглядел мёртвым.
-  bool _listenStarting = false;
-  bool _speechReady = false; // initialize() один раз на весь баттл, не на каждый вопрос
-  bool _speechDenied = false;
-  String? _speechErrorMsg; // конкретная причина отказа (не только "нет доступа")
-  String _partialTranscript = '';
+  final AudioRecorder _recorder = AudioRecorder();
+  bool _recording = false;
+  // Между тапом/автозапуском и реальным стартом записи — жалоба: "сразу после вопроса он не
+  // пишет что слушает", раньше в этот промежуток экран выглядел мёртвым.
+  bool _recordStarting = false;
+  int _recordSeconds = 0;
+  Timer? _recordTimer;
+  bool _micDenied = false;
+  // Отдельно от простого отказа — если пользователь один раз отказал совсем (или это уже не
+  // первый показ системного диалога), Android больше НЕ показывает диалог запроса вообще, и
+  // request() просто молча возвращает "отказано" — единственный выход тогда открыть настройки
+  // приложения вручную (жалоба: "при запуске не просит разрешение").
+  bool _micPermanentlyDenied = false;
+  static const int _maxRecordSeconds = 45;
 
   Timer? _pollTimer;
   bool _submitting = false;
@@ -68,7 +80,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   void dispose() {
     _pollTimer?.cancel();
     _questionTimer?.dispose();
-    _speech.stop();
+    _recordTimer?.cancel();
+    if (_recording) _recorder.stop();
+    _recorder.dispose();
     _openAnswerCtrl.dispose();
     _disputeCtrl.dispose();
     super.dispose();
@@ -121,7 +135,6 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       _disputeReply = null;
       _selectedOption = null;
       _openAnswerCtrl.clear();
-      _partialTranscript = '';
       _phase = _Phase.question;
     });
     if (_item?['type'] == 'open') {
@@ -163,84 +176,73 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     _pollTimer ??= Timer.periodic(const Duration(seconds: 4), (_) => _checkStatus());
   }
 
-  // ---------------- Голос (открытые вопросы) ----------------
+  // ---------------- Голос (открытые вопросы) — запись аудио, отправка в Gemini -------------
 
   Future<void> _beginListening() async {
     setState(() {
-      _speechDenied = false;
-      _speechErrorMsg = null;
-      _partialTranscript = '';
-      _listenStarting = true; // сразу что-то показываем, не дожидаясь initialize/listen
+      _micDenied = false;
+      _micPermanentlyDenied = false;
+      _recordStarting = true; // сразу что-то показываем, не дожидаясь реального старта записи
     });
-    final status = await Permission.microphone.request();
-    if (!status.isGranted) {
-      if (mounted) setState(() { _speechDenied = true; _listenStarting = false; });
+    // record сам разберётся с системным запросом разрешения — но если оно уже "запрещено
+    // навсегда" (см. _micPermanentlyDenied), система больше НЕ покажет диалог, а request()
+    // молча вернёт false: единственный выход тогда — кнопка "Открыть настройки" в UI ниже.
+    bool granted = false;
+    try {
+      granted = await _recorder.hasPermission();
+    } catch (_) {}
+    if (!mounted) return;
+    if (!granted) {
+      final status = await Permission.microphone.status;
+      setState(() {
+        _micDenied = true;
+        _micPermanentlyDenied = status.isPermanentlyDenied;
+        _recordStarting = false;
+      });
       return;
     }
-    // initialize() — тяжёлая операция (поднимает нативный движок распознавания); жалоба
-    // "голосовой не принимает" — один из вероятных источников: раньше вызывался заново на
-    // КАЖДЫЙ открытый вопрос в течение батла, а не один раз, что на части устройств/версий
-    // плагина оставляет движок в нерабочем состоянии после повторных initialize() без явного
-    // cancel(). Теперь — один раз на весь экран боя, дальше просто listen() заново.
-    if (!_speechReady) {
-      final available = await _speech.initialize(
-        onStatus: (status) {
-          if (status == 'done' || status == 'notListening') {
-            if (mounted && _listening) {
-              setState(() => _listening = false);
-            }
-          }
-        },
-        onError: (error) {
-          if (mounted) {
-            setState(() {
-              _listening = false;
-              _listenStarting = false;
-              _speechErrorMsg = error.errorMsg;
-            });
-          }
-        },
-      );
+    try {
+      final dir = await getTemporaryDirectory();
+      final path = '${dir.path}/answer_${DateTime.now().millisecondsSinceEpoch}.m4a';
+      await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
+    } catch (_) {
       if (!mounted) return;
-      if (!available) {
-        setState(() { _speechDenied = true; _listenStarting = false; });
+      setState(() { _micDenied = true; _recordStarting = false; });
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _recording = true;
+      _recordStarting = false;
+      _recordSeconds = 0;
+    });
+    _recordTimer?.cancel();
+    _recordTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
         return;
       }
-      _speechReady = true;
-    }
-    // ru_RU не на всех устройствах установлен голосовым движком — если его нет в списке,
-    // отдаём выбор системному распознаванию по умолчанию вместо того, чтобы listen() молча
-    // ничего не делал (жалоба: "голосовой не принимает").
-    String? localeId = 'ru_RU';
-    try {
-      final locales = await _speech.locales();
-      if (!locales.any((l) => l.localeId.toLowerCase().startsWith('ru'))) localeId = null;
-    } catch (_) {
-      localeId = null;
-    }
-    setState(() { _listening = true; _listenStarting = false; });
-    await _speech.listen(
-      localeId: localeId,
-      onResult: (result) {
-        if (!mounted) return;
-        setState(() => _partialTranscript = result.recognizedWords);
-        if (result.finalResult && result.recognizedWords.trim().isNotEmpty) {
-          _submitOpenAnswer(result.recognizedWords.trim());
-        }
-      },
-      listenFor: const Duration(seconds: 60),
-      pauseFor: const Duration(seconds: 3),
-      partialResults: true,
-      cancelOnError: true,
-    );
+      setState(() => _recordSeconds++);
+      // Потолок на случай, если забыли/не смогли нажать "Готово" — запись не должна идти вечно.
+      if (_recordSeconds >= _maxRecordSeconds) _stopListeningManually();
+    });
   }
 
-  void _stopListeningManually() {
-    _speech.stop();
-    setState(() => _listening = false);
-    if (_partialTranscript.trim().isNotEmpty) {
-      _submitOpenAnswer(_partialTranscript.trim());
-    }
+  Future<void> _stopListeningManually() async {
+    if (!_recording) return;
+    _recordTimer?.cancel();
+    String? path;
+    try {
+      path = await _recorder.stop();
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() => _recording = false);
+    if (path == null) return;
+    try {
+      final bytes = await File(path).readAsBytes();
+      if (bytes.isEmpty) return;
+      await _submitOpenAnswerAudio(base64Encode(bytes));
+    } catch (_) {}
   }
 
   // ---------------- Ответ / вердикт ----------------
@@ -260,13 +262,28 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
   Future<void> _submitOpenAnswer(String text) async {
     if (_submitting || _quizId == null || text.trim().isEmpty) return;
-    _speech.stop();
+    if (_recording) {
+      _recordTimer?.cancel();
+      try {
+        await _recorder.stop();
+      } catch (_) {}
+    }
     setState(() {
       _submitting = true;
-      _listening = false;
+      _recording = false;
       _phase = _Phase.grading;
     });
     final res = await Api.instance.answerOpen(_quizId!, text.trim());
+    _onAnswerResult(res);
+  }
+
+  Future<void> _submitOpenAnswerAudio(String audioBase64) async {
+    if (_submitting || _quizId == null) return;
+    setState(() {
+      _submitting = true;
+      _phase = _Phase.grading;
+    });
+    final res = await Api.instance.answerOpenAudio(_quizId!, audioBase64, 'audio/aac');
     _onAnswerResult(res);
   }
 
@@ -591,29 +608,41 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            if (_speechDenied) ...[
+            if (_micDenied) ...[
               const Icon(Icons.mic_off, size: 36, color: AgroColors.danger),
               const SizedBox(height: 8),
-              const Text('Нет доступа к микрофону — разрешите его в настройках телефона для этого приложения, или напечатайте ответ ниже.', textAlign: TextAlign.center),
-            ] else if (_listenStarting) ...[
+              Text(
+                _micPermanentlyDenied
+                    ? 'Микрофон заблокирован для этого приложения — включите его в настройках телефона, или напечатайте ответ ниже.'
+                    : 'Нет доступа к микрофону — разрешите его, или напечатайте ответ ниже.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 10),
+              if (_micPermanentlyDenied)
+                OutlinedButton.icon(onPressed: openAppSettings, icon: const Icon(Icons.settings), label: const Text('Открыть настройки'))
+              else
+                OutlinedButton.icon(onPressed: _beginListening, icon: const Icon(Icons.mic), label: const Text('Попробовать снова')),
+            ] else if (_recordStarting) ...[
               const SizedBox(height: 4),
               const ThinkingIndicator(label: 'Готовлю микрофон…', compact: true),
               const SizedBox(height: 8),
             ] else ...[
-              Icon(_listening ? Icons.mic : Icons.mic_none, size: 44, color: _listening ? AgroColors.green : Colors.grey),
+              Icon(_recording ? Icons.mic : Icons.mic_none, size: 44, color: _recording ? AgroColors.danger : Colors.grey),
               const SizedBox(height: 8),
-              Text(_listening ? '🎤 Слушаю…' : 'Микрофон выключен', style: const TextStyle(fontWeight: FontWeight.bold)),
+              Text(
+                _recording ? '🔴 Запись… ${_recordSeconds}с' : 'Микрофон выключен',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
               const SizedBox(height: 10),
-              Text(_partialTranscript.isEmpty ? 'Говорите — ответ отправится сам, как только вы замолчите.' : _partialTranscript, textAlign: TextAlign.center),
-              if (!_listening && _speechErrorMsg != null) ...[
-                const SizedBox(height: 6),
-                Text('⚠️ Распознавание речи: $_speechErrorMsg', style: const TextStyle(fontSize: 11.5, color: AgroColors.danger), textAlign: TextAlign.center),
-              ],
+              Text(
+                _recording ? 'Говорите ответ, затем нажмите «Готово».' : 'Голосовой ответ отправляется как аудио — ИИ слушает его сам.',
+                textAlign: TextAlign.center,
+              ),
               const SizedBox(height: 12),
-              if (_listening)
-                OutlinedButton.icon(onPressed: _stopListeningManually, icon: const Icon(Icons.stop), label: const Text('Готово, отправить'))
+              if (_recording)
+                FilledButton.icon(onPressed: _stopListeningManually, icon: const Icon(Icons.stop), label: const Text('Готово, отправить'))
               else
-                FilledButton.icon(onPressed: _beginListening, icon: const Icon(Icons.mic), label: const Text('Начать заново')),
+                OutlinedButton.icon(onPressed: _beginListening, icon: const Icon(Icons.mic), label: const Text('Начать заново')),
             ],
             const Divider(height: 28),
             TextField(

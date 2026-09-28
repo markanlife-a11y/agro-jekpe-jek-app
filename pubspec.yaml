@@ -12,11 +12,15 @@ dependencies:
   http: ^1.2.0
   cupertino_icons: ^1.0.6
   shared_preferences: ^2.2.0
-  speech_to_text: ^7.0.0
   permission_handler: ^11.3.0
   audioplayers: ^6.0.0
   url_launcher: ^6.3.0
   auto_size_text: ^3.0.0
+  # Запись голосового ответа как настоящего аудио — отправляется в Gemini на бэкенде, а не
+  # распознаётся речью на самом устройстве (speech_to_text снят: он и был источником постоянных
+  # "голосовой не работает" — на части устройств/прошивок просто немо не запускал listen()).
+  record: ^5.1.2
+  path_provider: ^2.1.0
 
 dev_dependencies:
   flutter_test:
