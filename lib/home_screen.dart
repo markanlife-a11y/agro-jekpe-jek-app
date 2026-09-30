@@ -39,11 +39,16 @@ class _HomeScreenState extends State<HomeScreen> {
     _load();
   }
 
-  Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+  // silent — обновить данные в фоне, не подменяя экран на "Загружаю" (жалоба: каждый возврат из
+  // профиля/настроек/игры перерисовывал весь экран заново, "не смотрится красиво, нужно без
+  // него"). Полноэкранный индикатор нужен только один раз, на самом первом открытии.
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     final res = await Api.instance.me();
     if (!mounted) return;
     if (res['ok'] != true) {
@@ -55,6 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     setState(() {
       _loading = false;
+      _error = null;
       _data = res;
     });
   }
@@ -68,12 +74,12 @@ class _HomeScreenState extends State<HomeScreen> {
             user: _data?['user'] as Map<String, dynamic>?,
           ),
         ))
-        .then((_) => _load());
+        .then((_) => _load(silent: true));
   }
 
   void _startRandom() {
     Haptics.tap();
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const QueueScreen())).then((_) => _load());
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const QueueScreen())).then((_) => _load(silent: true));
   }
 
   Future<void> _createInvite() async {
@@ -110,14 +116,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _openBattle(int battleId) {
     Haptics.tap();
-    Navigator.of(context).push(MaterialPageRoute(builder: (_) => GameScreen(battleId: battleId))).then((_) => _load());
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => GameScreen(battleId: battleId))).then((_) => _load(silent: true));
   }
 
   void _openFriendProfile(Map<String, dynamic> friend) {
     Haptics.tap();
     Navigator.of(context)
         .push(MaterialPageRoute(builder: (_) => FriendProfileScreen(friend: friend)))
-        .then((_) => _load());
+        .then((_) => _load(silent: true));
   }
 
   static const _titles = ['⚔️ Agro Jekpe-jek', '👥 Друзья', '🏆 Рейтинг', '🛍️ Магазин'];
@@ -130,12 +136,26 @@ class _HomeScreenState extends State<HomeScreen> {
         actions: [IconButton(icon: const Icon(Icons.settings_outlined), tooltip: 'Настройки', onPressed: _openSettings)],
       ),
       body: RefreshIndicator(
-        onRefresh: _load,
+        onRefresh: () => _load(silent: true), // свой спиннер снизу уже есть, полноэкранный не нужен
         child: _loading
             ? const Center(child: ThinkingIndicator(label: 'Загружаю…'))
             : _error != null
                 ? _buildErrorBody()
-                : _buildTabBody(),
+                // Плавный переход между вкладками (жалоба: "переход между вкладками должен быть
+                // анимированным") — лёгкое затухание + сдвиг вместо мгновенной подмены контента.
+                : AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 240),
+                    switchInCurve: Curves.easeOut,
+                    switchOutCurve: Curves.easeIn,
+                    transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: SlideTransition(
+                        position: Tween<Offset>(begin: const Offset(0, 0.03), end: Offset.zero).animate(animation),
+                        child: child,
+                      ),
+                    ),
+                    child: KeyedSubtree(key: ValueKey(_tab), child: _buildTabBody()),
+                  ),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
@@ -271,23 +291,54 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // --- Вкладка "Друзья" --------------------------------------------------------------------
+  // Полноценная: добавление по поиску имени/ID (жалоба: "должна быть кнопка добавить друга,
+  // поиск по имени или ID"), свой ID для тех, кого добавляют по коду, удаление друга (с
+  // завершением активной игры прямо тут же, если она есть — жалоба: "прекратить игру с ним там
+  // же если игра есть").
 
   Widget _buildFriendsTab() {
     final friends = ((_data!['friends'] as List?) ?? []).cast<Map<String, dynamic>>();
-    if (friends.isEmpty) {
-      return ListView(
-        padding: const EdgeInsets.all(24),
-        children: const [
-          SizedBox(height: 60),
-          Icon(Icons.people_outline, size: 40, color: Colors.black38),
-          SizedBox(height: 12),
-          Text('Пока нет друзей по батлам — сыграйте случайную игру или пригласите кого-то по ссылке во вкладке «Игры».', textAlign: TextAlign.center),
-        ],
-      );
-    }
+    final myCode = _data!['user']?['friendCode']?.toString();
     return ListView(
       padding: const EdgeInsets.all(16),
-      children: [Card(child: Column(children: friends.map((f) => _friendTile(f)).toList()))],
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                const Icon(Icons.badge_outlined, color: AgroColors.green),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    myCode != null ? 'Ваш ID: $myCode — скажите его другу, чтобы он добавил вас' : 'Загружаю ваш ID…',
+                    style: const TextStyle(fontSize: 12.5),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(onPressed: _openAddFriendDialog, icon: const Icon(Icons.person_add_alt_1), label: const Text('Добавить друга')),
+        ),
+        const SizedBox(height: 18),
+        if (friends.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 30),
+            child: Column(
+              children: [
+                Icon(Icons.people_outline, size: 40, color: Colors.black38),
+                SizedBox(height: 12),
+                Text('Пока никого нет — добавьте по ID/имени или сыграйте случайную игру во вкладке «Игры».', textAlign: TextAlign.center),
+              ],
+            ),
+          )
+        else
+          Card(child: Column(children: friends.map((f) => _friendTile(f)).toList())),
+      ],
     );
   }
 
@@ -300,11 +351,160 @@ class _HomeScreenState extends State<HomeScreen> {
       leading: ProfileAvatar(avatarId: f['avatarId']?.toString(), frameId: f['frameId']?.toString(), size: 42),
       title: Text(name),
       subtitle: Text('${f['gamesPlayed']} игр · ${f['wins']}W-${f['losses']}L-${f['draws']}D'),
-      trailing: OutlinedButton(
-        onPressed: busy ? null : () => _challengeFriend(friendChatId, name),
-        child: Text(busy ? '…' : '🎮 Играть'),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          OutlinedButton(
+            onPressed: busy ? null : () => _challengeFriend(friendChatId, name),
+            child: Text(busy ? '…' : '🎮 Играть'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.person_remove_outlined, color: AgroColors.danger, size: 20),
+            tooltip: 'Удалить из друзей',
+            onPressed: () => _confirmDeleteFriend(friendChatId, name),
+          ),
+        ],
       ),
     );
+  }
+
+  Future<void> _openAddFriendDialog() async {
+    Haptics.tap();
+    final queryCtrl = TextEditingController();
+    List<Map<String, dynamic>> results = [];
+    bool searching = false;
+    String? error;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom, left: 16, right: 16, top: 16),
+          child: StatefulBuilder(
+            builder: (ctx, setLocal) {
+              Future<void> runSearch() async {
+                final q = queryCtrl.text.trim();
+                if (q.isEmpty) return;
+                setLocal(() {
+                  searching = true;
+                  error = null;
+                });
+                final res = await Api.instance.friendSearch(q);
+                searching = false;
+                if (res['ok'] != true) {
+                  error = res['message']?.toString() ?? 'Не получилось';
+                  results = [];
+                } else {
+                  results = ((res['results'] as List?) ?? []).cast<Map<String, dynamic>>();
+                  if (results.isEmpty) error = 'Никого не нашлось.';
+                }
+                setLocal(() {});
+              }
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Добавить друга', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: queryCtrl,
+                          autofocus: true,
+                          decoration: const InputDecoration(hintText: 'Имя или ID друга', border: OutlineInputBorder()),
+                          onSubmitted: (_) => runSearch(),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton(onPressed: searching ? null : runSearch, child: const Text('Найти')),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (searching) const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: CircularProgressIndicator())
+                  else if (error != null)
+                    Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text('⚠️ $error', style: const TextStyle(color: AgroColors.danger)))
+                  else
+                    ...results.map((r) {
+                      final already = r['alreadyFriend'] == true;
+                      return ListTile(
+                        leading: ProfileAvatar(avatarId: r['avatarId']?.toString(), frameId: r['frameId']?.toString(), size: 38),
+                        title: Text(r['name']?.toString() ?? '?'),
+                        subtitle: r['friendCode'] != null ? Text('ID: ${r['friendCode']}', style: const TextStyle(fontSize: 11)) : null,
+                        trailing: already
+                            ? const Chip(label: Text('Уже друг'))
+                            : FilledButton(
+                                onPressed: () async {
+                                  final addRes = await Api.instance.friendAdd((r['chatId'] as num).toInt());
+                                  if (ctx.mounted) Navigator.of(ctx).pop();
+                                  if (!mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(addRes['ok'] == true ? 'Друг добавлен 🌾' : '⚠️ ${addRes['message']}')),
+                                  );
+                                  if (addRes['ok'] == true) _load(silent: true);
+                                },
+                                child: const Text('Добавить'),
+                              ),
+                      );
+                    }),
+                  const SizedBox(height: 16),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _confirmDeleteFriend(int friendChatId, String name) async {
+    Haptics.tap();
+    // Всегда подтверждение сразу — удаление необратимо стирает историю игр с этим другом, даже
+    // если активной игры нет.
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Удалить $name из друзей?'),
+        content: const Text('Вся статистика и история игр с этим другом удалится безвозвратно.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Удалить')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final res = await Api.instance.friendRemove(friendChatId);
+    if (res['ok'] == true) {
+      if (mounted) _load(silent: true);
+      return;
+    }
+    if (res['hasOngoingGame'] != true) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('⚠️ ${res['message'] ?? 'не получилось'}')));
+      return;
+    }
+
+    if (!mounted) return;
+    final confirmedEndGame = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Есть незавершённая игра'),
+        content: Text('С $name сейчас идёт игра — удаление из друзей завершит и её. Продолжить?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Удалить и завершить игру')),
+        ],
+      ),
+    );
+    if (confirmedEndGame != true) return;
+    final res2 = await Api.instance.friendRemove(friendChatId, endGame: true);
+    if (!mounted) return;
+    if (res2['ok'] != true) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('⚠️ ${res2['message'] ?? 'не получилось'}')));
+      return;
+    }
+    _load(silent: true);
   }
 
   // --- Вкладка "Рейтинг" -------------------------------------------------------------------
@@ -330,8 +530,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _leaderboardTile(Map<String, dynamic> l, int place) {
     return ListTile(
-      leading: CircleAvatar(child: Text('$place')),
-      title: Text(l['name']?.toString() ?? '?'),
+      leading: ProfileAvatar(avatarId: l['avatarId']?.toString(), frameId: l['frameId']?.toString(), size: 42),
+      title: Text('$place. ${l['name']?.toString() ?? '?'}'),
       subtitle: Text('${l['gamesPlayed']} игр'),
       trailing: Chip(label: Text('${l['wins']} 🏆')),
     );

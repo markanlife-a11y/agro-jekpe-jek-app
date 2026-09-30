@@ -79,8 +79,14 @@ class Api {
   Future<Map<String, dynamic>> telegramLoginCode() => _post('/miniapp/api/auth/telegram-login-code');
   Future<Map<String, dynamic>> telegramLoginStatus(String code) => _post('/miniapp/api/auth/telegram-login-status', {'code': code});
 
-  Future<Map<String, dynamic>> updateProfile({String? avatarId, String? frameId}) =>
-      _post('/miniapp/api/profile/update', {'avatarId': avatarId, 'frameId': frameId});
+  Future<Map<String, dynamic>> updateProfile({String? avatarId, String? frameId, String? displayName}) =>
+      _post('/miniapp/api/profile/update', {'avatarId': avatarId, 'frameId': frameId, if (displayName != null) 'displayName': displayName});
+
+  // Обратная привязка — почта+пароль ДЛЯ Telegram-аккаунта (на случай, если забудут доступ к
+  // Telegram): резолвится в тот же chat_id, а не заводит параллельный аккаунт.
+  Future<Map<String, dynamic>> linkEmail(String email, String password) =>
+      _post('/miniapp/api/auth/link-email', {'email': email, 'password': password});
+  Future<Map<String, dynamic>> unlinkEmail() => _post('/miniapp/api/auth/unlink-email');
 
   // --- Главный экран ---
   Future<Map<String, dynamic>> me() => _post('/miniapp/api/me');
@@ -95,6 +101,12 @@ class Api {
   Future<Map<String, dynamic>> inviteAccept(String code) => _post('/miniapp/api/invite/accept', {'code': code});
   Future<Map<String, dynamic>> friendChallenge(int friendChatId) =>
       _post('/miniapp/api/friends/challenge', {'friendChatId': friendChatId});
+  // Поиск/добавление/удаление друга напрямую — по имени или его личному коду, без совместной
+  // игры (раньше единственным способом попасть в друзья была сыгранная партия).
+  Future<Map<String, dynamic>> friendSearch(String query) => _post('/miniapp/api/friends/search', {'query': query});
+  Future<Map<String, dynamic>> friendAdd(int friendChatId) => _post('/miniapp/api/friends/add', {'friendChatId': friendChatId});
+  Future<Map<String, dynamic>> friendRemove(int friendChatId, {bool endGame = false}) =>
+      _post('/miniapp/api/friends/remove', {'friendChatId': friendChatId, 'endGame': endGame});
 
   // --- Раунд/ответ/спор ---
   Future<Map<String, dynamic>> battlePlay(int battleId) => _post('/miniapp/api/battle/play', {'battleId': battleId});

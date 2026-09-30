@@ -45,6 +45,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   final TextEditingController _openAnswerCtrl = TextEditingController();
   final TextEditingController _disputeCtrl = TextEditingController();
   int? _selectedOption;
+  bool _wasTimeout = false; // не успели ответить на MCQ до истечения таймера — см. _buildResultPanel
 
   final AudioRecorder _recorder = AudioRecorder();
   bool _recording = false;
@@ -104,6 +105,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     setState(() {
       _submitting = true;
       _selectedOption = null;
+      _wasTimeout = true;
       _phase = _Phase.grading;
     });
     final res = await Api.instance.answerTimeout(_quizId!);
@@ -134,6 +136,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       _answerRes = null;
       _disputeReply = null;
       _selectedOption = null;
+      _wasTimeout = false;
       _openAnswerCtrl.clear();
       _phase = _Phase.question;
     });
@@ -529,6 +532,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
           friendAvatarId: isFriendCard ? friendAvatarId : null,
           friendFrameId: isFriendCard ? friendFrameId : null,
           showFriendMarker: isFriendCard,
+          cornerIndex: i,
           onTap: locked ? null : () => _submitMcq(i),
         );
       },
@@ -544,6 +548,12 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
     final res = _answerRes!;
     final correct = res['correct'] == true;
+    // MCQ: верно/неверно и так видно по цвету карточки варианта (жалоба: "не надо писать
+    // Засчитано и не засчитано, это и так зелёным и красным") — текстом дублируем только для
+    // открытого вопроса, где такой цветной карточки нет вообще. Тайм-аут — отдельный случай:
+    // карточки при нём не показывают красный (никто не был выбран), поэтому только тут и
+    // объясняем словами, что вообще произошло.
+    final isOpen = _item?['type'] == 'open';
     final canDispute = res['canDispute'] == true && _disputeReply == null;
     return Padding(
       padding: const EdgeInsets.only(top: 16),
@@ -557,9 +567,14 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(correct ? '✅ Верно' : '❌ Не засчитано', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-                  const SizedBox(height: 6),
-                  Text(res['explanation']?.toString() ?? ''),
+                  if (_wasTimeout) ...[
+                    const Text('⏰ Время вышло — не успели ответить', style: TextStyle(fontWeight: FontWeight.bold, color: AgroColors.danger)),
+                    const SizedBox(height: 6),
+                  ] else if (isOpen) ...[
+                    Text(correct ? '✅ Верно' : '❌ Не засчитано', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                    const SizedBox(height: 6),
+                  ],
+                  Text('Объяснение: ${res['explanation']?.toString() ?? ''}'),
                 ],
               ),
             ),
@@ -927,6 +942,10 @@ class _AnswerCard extends StatefulWidget {
   final bool showFriendMarker;
   final String? friendAvatarId;
   final String? friendFrameId;
+  // Позиция карточки в сетке 2×2 (0=слева сверху, 1=справа сверху, 2=слева снизу, 3=справа
+  // снизу) — аватар друга садится в СВОЙ угол каждой карточки, а не всегда в один и тот же
+  // (жалоба: аватар в одном углу "негармонично"), не залезая на текст самого варианта.
+  final int cornerIndex;
   final VoidCallback? onTap;
 
   const _AnswerCard({
@@ -939,6 +958,7 @@ class _AnswerCard extends StatefulWidget {
     required this.showFriendMarker,
     required this.friendAvatarId,
     required this.friendFrameId,
+    required this.cornerIndex,
     required this.onTap,
   });
 
@@ -973,34 +993,59 @@ class _AnswerCardState extends State<_AnswerCard> with SingleTickerProviderState
           borderRadius: BorderRadius.circular(16),
           onTap: widget.onTap,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            // Свой угол занят аватаром (см. ниже) — отступаем от него чуть больше, чтобы не
+            // читалось впритык, но не трогаем противоположные углы.
+            padding: EdgeInsets.only(
+              left: 12 + (widget.showFriendMarker && widget.cornerIndex % 2 == 0 ? 14 : 0),
+              right: 12 + (widget.showFriendMarker && widget.cornerIndex % 2 == 1 ? 14 : 0),
+              top: 8,
+              bottom: 8,
+            ),
             child: Stack(
               clipBehavior: Clip.none,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: AutoSizeText(
-                        widget.text,
-                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: widget.textColor),
-                        maxLines: 3,
-                        minFontSize: 10,
+                // Центр по горизонтали И вертикали (жалоба: "текст должен центрироваться ровно
+                // по горизонтали и вертикали") — Center внутри Stack растягивается на весь размер
+                // карточки, текст выравнивается внутри него в обе стороны.
+                Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: AutoSizeText(
+                          widget.text,
+                          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: widget.textColor),
+                          textAlign: TextAlign.center,
+                          maxLines: 3,
+                          minFontSize: 10,
+                          // Если даже при минимальном шрифте в 3 строки не влезает (жалоба: "текст
+                          // должен быть анимированным, чтобы можно было читать невмещающуюся
+                          // часть") — вместо обрезки бегущая строка, прокручивающая весь текст.
+                          overflowReplacement: _MarqueeText(
+                            text: widget.text,
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: widget.textColor),
+                          ),
+                        ),
                       ),
-                    ),
-                    if (widget.showCorrectIcon) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.check_circle, color: Colors.white, size: 20)),
-                    if (widget.showWrongIcon) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.cancel, color: Colors.white, size: 20)),
-                  ],
+                      if (widget.showCorrectIcon) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.check_circle, color: Colors.white, size: 20)),
+                      if (widget.showWrongIcon) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.cancel, color: Colors.white, size: 20)),
+                    ],
+                  ),
                 ),
-                // Маленький круглый аватар вместо текстового бейджа (тот перекрывал текст
-                // варианта) — в нижнем правом углу карточки, как маркер "друг выбрал это".
+                // Маленький круглый аватар — жалоба: всегда в одном и том же (нижнем правом)
+                // углу выглядело негармонично и иногда перекрывало текст; теперь у каждой из 4
+                // карточек СВОЙ угол (0 слева-сверху, 1 справа-сверху, 2 слева-снизу, 3
+                // справа-снизу), подальше от центра, где живёт текст.
                 if (widget.showFriendMarker)
                   Positioned(
-                    right: -4,
-                    bottom: -4,
+                    left: widget.cornerIndex % 2 == 0 ? -4 : null,
+                    right: widget.cornerIndex % 2 == 1 ? -4 : null,
+                    top: widget.cornerIndex < 2 ? -6 : null,
+                    bottom: widget.cornerIndex >= 2 ? -6 : null,
                     child: Container(
                       padding: const EdgeInsets.all(1.5),
                       decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.white),
-                      child: ProfileAvatar(avatarId: widget.friendAvatarId, frameId: widget.friendFrameId, size: 24),
+                      child: ProfileAvatar(avatarId: widget.friendAvatarId, frameId: widget.friendFrameId, size: 22),
                     ),
                   ),
               ],
@@ -1014,6 +1059,71 @@ class _AnswerCardState extends State<_AnswerCard> with SingleTickerProviderState
       animation: _pulseCtrl,
       builder: (context, child) => Opacity(opacity: 0.55 + 0.45 * _pulseCtrl.value, child: child),
       child: card,
+    );
+  }
+}
+
+/// Бегущая строка — показывается вместо AutoSizeText, когда текст варианта не влезает в карточку
+/// даже при минимальном шрифте в 3 строки; непрерывно прокручивает текст целиком по кругу, чтобы
+/// прочитать можно было всё, а не только то, что обрезано многоточием.
+class _MarqueeText extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+  const _MarqueeText({required this.text, required this.style});
+
+  @override
+  State<_MarqueeText> createState() => _MarqueeTextState();
+}
+
+class _MarqueeTextState extends State<_MarqueeText> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 7))..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final painter = TextPainter(
+          text: TextSpan(text: widget.text, style: widget.style),
+          maxLines: 1,
+          textDirection: TextDirection.ltr,
+        )..layout();
+        final textWidth = painter.width;
+        final boxWidth = constraints.maxWidth.isFinite ? constraints.maxWidth : textWidth;
+        if (textWidth <= boxWidth) {
+          return Text(widget.text, style: widget.style, maxLines: 1, overflow: TextOverflow.ellipsis);
+        }
+        final gap = 36.0;
+        final cycle = textWidth + gap;
+        return ClipRect(
+          child: SizedBox(
+            height: painter.height,
+            child: AnimatedBuilder(
+              animation: _ctrl,
+              builder: (context, child) {
+                final dx = -(_ctrl.value * cycle);
+                return Stack(
+                  children: [
+                    Positioned(left: dx, top: 0, child: Text(widget.text, style: widget.style, maxLines: 1, softWrap: false)),
+                    Positioned(left: dx + cycle, top: 0, child: Text(widget.text, style: widget.style, maxLines: 1, softWrap: false)),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+      },
     );
   }
 }
